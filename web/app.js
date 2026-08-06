@@ -27,7 +27,7 @@ const S = {
   fSearch: {},
   clickFilter: { col:null, val:null },
   activeTab: 0,
-  ovTeam: 0,                   // 0 = Merchant Support, 1 = Client Support
+  ovTeam: 0,                    // 0 = Merchant Support, 1 = Client Support
   drill: { merchant:null, client:null },
   slideshow: false,
   slideIndex: 0,
@@ -87,22 +87,22 @@ async function fetchJson(url, bust) {
 
 async function loadData(bust) {
   showLoading('Loading tickets…');
-  S.meta = await fetchJson('data/meta.json', bust);
-  S.tickets = await fetchJson('data/tickets.json.gz', bust);
+  S.meta = await fetchJson('./data/meta.json', bust);
+  S.tickets = await fetchJson('./data/tickets.json.gz', bust);
   S.colIdx = {};
   S.tickets.cols.forEach((c, i) => { S.colIdx[c] = i; });
   showLoading('Loading quality data…');
-  S.agent = await fetchJson('data/agent.json', bust);
-  S.sla = await fetchJson('data/sla.json', bust);
-  S.redemption = await fetchJson('data/redemption.json', bust);
+  S.agent = await fetchJson('./data/agent.json', bust);
+  S.sla = await fetchJson('./data/sla.json', bust);
+  S.redemption = await fetchJson('./data/redemption.json', bust);
   hideLoading();
 }
 
 /* ------------------------------ FILTER PIPELINE ------------------------------ */
 function dateRange() {
   const mode = S.filters.dateMode;
-  const maxStr = S.meta.date_max;
-  if (mode === 'All time' || !mode) return null;
+  const maxStr = S.meta ? S.meta.date_max : null;
+  if (mode === 'All time' || !mode || !maxStr) return null;
   if (mode === 'Custom range') {
     if (!S.filters.customStart || !S.filters.customEnd) return null;
     return { start: S.filters.customStart, end: S.filters.customEnd };
@@ -161,6 +161,7 @@ function computeActiveFilters() {
 
 function cleanedUnique(rows, colName) {
   const out = new Set();
+  if (!rows) return [];
   for (const r of rows) {
     const v = cleanVal(get(r, colName));
     if (v && !inBlack(v)) out.add(v);
@@ -171,6 +172,7 @@ function cleanedUnique(rows, colName) {
 /* ------------------------------ AGGREGATION ------------------------------ */
 function countBy(rows, colName, { clean = false, limit = null, sortDesc = true } = {}) {
   const counts = new Map();
+  if (!rows) return [];
   for (const r of rows) {
     let v = cleanVal(get(r, colName));
     if (clean && inBlack(v)) continue;
@@ -191,19 +193,6 @@ function groupTop(rows, byCol, hoverCol, hoverN, { clean = true } = {}) {
       .map((x) => '• ' + x.name + ': ' + fmt(x.value));
     return { name: t.name, value: t.value, hover: lines.join('<br>') };
   });
-}
-
-function smartAnalysis(dataLen, baseLen) {
-  const lines = [];
-  if (!dataLen) return [['No data for this filter', 'gray']];
-  const share = baseLen ? (dataLen / baseLen * 100) : 0;
-  lines.push([share.toFixed(1) + '% of all tickets', NAVY]);
-  if (dataLen > 0) {
-    const mCounts = {};
-    // peak month computed elsewhere (needs rows), filled by caller
-    lines.push(['—', GREEN]);
-  }
-  return lines;
 }
 
 function topSafe(rows, colName) {
@@ -254,7 +243,7 @@ function barSpec(title, items, baseColor, tooltipFn) {
   };
 }
 
-function pieSpec(title, items, colors, tooltipFn, hole) {
+function pieSpec(title, items, colors, tooltipFn) {
   return {
     tooltip: Object.assign({}, HOVER_STYLE, { formatter: tooltipFn || ((p) => `<b>${esc(p.name)}</b><br>${fmt(p.value)} (${p.percent == null ? '' : p.percent.toFixed(1) + '%'})`) }),
     series: [{
@@ -305,7 +294,7 @@ function submitLogin() {
   if (!key) return;
   if (key === S.auth.admin) { S.session = { role: 'admin', key }; }
   else if (key === S.auth.user) { S.session = { role: 'user', key }; }
-  else if (S.auth.clients[key]) {
+  else if (S.auth.clients && S.auth.clients[key]) {
     const c = S.auth.clients[key];
     S.session = { role: 'client', key, projects: c.projects, is_vodafone: !!c.is_vodafone, logo: c.logo || null };
   } else { err.hidden = false; return; }
@@ -358,7 +347,6 @@ function renderSidebar() {
   const role = S.session.role;
   const isClient = role === 'client';
   sb.className = 'sidebar' + (isClient ? ' client' : '');
-  const ffBase = S.ffBase;
 
   const logoHtml = isClient && S.session.logo
     ? `<div class="sb-logo"><img src="assets/${esc(S.session.logo)}" alt="logo"></div>`
@@ -414,7 +402,6 @@ function renderSidebar() {
 
   sb.innerHTML = html;
 
-  // date mode
   $('#date-mode').addEventListener('change', (e) => {
     S.filters.dateMode = e.target.value;
     if (S.filters.dateMode !== 'Custom range') { S.filters.customStart = S.filters.customEnd = null; }
@@ -424,11 +411,9 @@ function renderSidebar() {
   if (cs) cs.addEventListener('change', (e) => { S.filters.customStart = e.target.value; renderAll(); });
   if (ce) ce.addEventListener('change', (e) => { S.filters.customEnd = e.target.value; renderAll(); });
 
-  // multiselects
   bindMselBehaviors(sb);
   bindCheckboxes();
 
-  // buttons
   $('#btn-refresh').addEventListener('click', async () => {
     const btn = $('#btn-refresh');
     btn.textContent = '↻ Refreshing…';
@@ -477,7 +462,7 @@ function handleFilterChange(e) {
 /* ============================== RENDER: HEADER + TABS ============================== */
 function renderHeader() {
   const hd = $('#dashboard-header');
-  const updated = S.meta.updated || '';
+  const updated = S.meta ? S.meta.updated : '';
   hd.innerHTML = `<div class="dashboard-header">
     <img src="assets/logo_small.png" width="34" alt="" onerror="this.style.display='none'">
     <h2>Support Analysis Dashboard</h2>
@@ -543,19 +528,14 @@ function animateValues(root) {
 }
 
 /* ============================== OVERVIEW ============================== */
-function teamRows(rows) { return rows.filter((r) => get(r, '_team') === (S.ovTeam === 0 ? 'merchant' : 'client')); }
-
 function buildOverviewCharts(ffDrill, clientMode, isVf) {
   const charts = [];
-  const hoverHeader = (n) => (p) => `<b>${esc(p[0].name)}</b><br>${fmt(p[0].value)}<br><br>${p[0].data.hover || ''}`;
+  const hoverHeader = () => (p) => `<b>${esc(p[0].name)}</b><br>${fmt(p[0].value)}<br><br>${p[0].data.hover || ''}`;
   const clickF = (colName) => (val) => { S.clickFilter = { col: colName, val }; renderAll(); };
 
   if (clientMode === 'client') {
-    // real client login
-    // 1. Top 10 Merchants
     const m = groupTop(ffDrill, 'Merchant', 'Call Microtype', 5);
     if (m.length) charts.push({ title: '🏪 1. Top 10 Merchants', type: 'bar', items: m, base: NAVY, tooltip: hoverHeader(), click: clickF('Merchant'), wide: false });
-    // 2. Top 10 Branches (District)
     const b = groupTop(ffDrill, 'District', 'Merchant', 6);
     if (b.length) charts.push({ title: '📍 2. Top 10 Branches', type: 'bar', items: b, base: LIGHT, tooltip: hoverHeader(), click: clickF('District'), wide: false });
     if (isVf) {
@@ -580,7 +560,6 @@ function buildOverviewCharts(ffDrill, clientMode, isVf) {
       if (ac.length) charts.push({ title: '🎬 Action Taken', type: 'bar', items: ac, base: NAVY, wide: false });
     }
   } else {
-    // admin/user: clientMode === false (merchant tab) or === true (client tab)
     const branchCol = clientMode === true ? 'District' : 'Branch User Name';
     const m = groupTop(ffDrill, 'Merchant', 'Call Microtype', 5);
     if (m.length) charts.push({ title: '🏪 1. Top 10 Merchants', type: 'bar', items: m, base: NAVY, tooltip: hoverHeader(), click: clickF('Merchant'), wide: false });
@@ -600,7 +579,7 @@ function buildOverviewCharts(ffDrill, clientMode, isVf) {
   return charts;
 }
 
-function renderChartCard(spec, idx) {
+function renderChartCard(spec) {
   if (spec.type === 'pie') {
     return pieCard(spec.title, spec.items, spec.tooltip, spec.click);
   }
@@ -658,7 +637,7 @@ function renderStatusPie(ffDrill, onClick) {
 }
 
 function renderTeamOverview(dataRows, opts) {
-  const { clientMode, drillTab, teamKey } = opts; // clientMode: false|true|'client'
+  const { clientMode, teamKey } = opts;
   const content = $('#content');
   const frag = document.createDocumentFragment();
 
@@ -676,7 +655,6 @@ function renderTeamOverview(dataRows, opts) {
     if (!hasFilter || !n) return [];
     const lines = [];
     lines.push([(base ? (n / base * 100) : 0).toFixed(1) + '% of all tickets', NAVY]);
-    // peak month
     const mm = {};
     for (const r of dataRows) { const m = monthOf(get(r, 'D_Obj')); mm[m] = (mm[m] || 0) + 1; }
     let best = null;
@@ -685,7 +663,6 @@ function renderTeamOverview(dataRows, opts) {
     return lines;
   };
 
-  // active filter badges
   const badgeHtml = Object.entries(activeFilters).map(([k, v]) => `<span class="filter-badge">${esc(k)}: ${esc(v)}</span>`).join('');
   const badges = document.createElement('div');
   badges.style.margin = '0 0 8px';
@@ -700,7 +677,6 @@ function renderTeamOverview(dataRows, opts) {
     frag.appendChild(cf);
   }
 
-  // ---- scorecards ----
   const scRow = document.createElement('div');
   if (clientMode === 'client') {
     scRow.className = 'sc-row center';
@@ -731,13 +707,11 @@ function renderTeamOverview(dataRows, opts) {
 
   let ffDrill = dataRows;
   if (clientMode !== 'client') {
-    // ---- volume trend ----
     const vol = renderVolumeTrend(dataRows, teamKey);
     if (vol.wrap) {
       vol.wrap.style.gridColumn = '1/-1';
       frag.appendChild(vol.wrap);
     }
-    // ---- drill-down select ----
     const drillRow = document.createElement('div');
     drillRow.className = 'drill-row';
     const curDrill = S.drill[teamKey] || 'All Data';
@@ -755,7 +729,6 @@ function renderTeamOverview(dataRows, opts) {
       if (v !== 'All Data') goExplorer(); else renderAll();
     });
 
-    // ---- status pie ----
     const statusCard = renderStatusPie(ffDrill, (s) => { S.clickFilter = { col: 'Ticket_Status', val: s }; renderAll(); });
     if (statusCard) {
       const statusWrap = document.createElement('div');
@@ -766,7 +739,6 @@ function renderTeamOverview(dataRows, opts) {
     }
   }
 
-  // ---- chart grid ----
   const isVf = !!S.session.is_vodafone;
   const specs = buildOverviewCharts(ffDrill, clientMode, isVf);
   if (specs.length) {
@@ -782,6 +754,9 @@ function renderTeamOverview(dataRows, opts) {
 
   content.appendChild(frag);
   animateValues(frag);
+
+  const cb = $('#clear-click-filter');
+  if (cb) cb.addEventListener('click', () => { S.clickFilter = { col: null, val: null }; renderAll(); });
 }
 
 function goExplorer() {
@@ -826,7 +801,6 @@ function renderOverview() {
 
   if (S.session.role === 'client') { renderClientSection(); return; }
 
-  // admin/user: sub-tabs
   const subtabs = document.createElement('div');
   subtabs.className = 'ov-subtabs';
   const mk = (label, idx) => {
@@ -843,7 +817,7 @@ function renderOverview() {
   const ff = applyFilters(S.ffBase);
   const teamRows = ff.filter((r) => get(r, '_team') === (S.ovTeam === 0 ? 'merchant' : 'client'));
 
-  const clientMode = S.ovTeam === 1; // true for Client tab
+  const clientMode = S.ovTeam === 1;
   if (S.slideshow) {
     renderSlideDeck(teamRows, S.ovTeam === 0 ? 'merchant' : 'client', clientMode ? true : false);
     scheduleSlideshow();
@@ -884,7 +858,7 @@ function renderQuality() {
     div.className = 'chart tall';
     card.appendChild(div);
     const agents = S.agent.per_agent;
-    const chart = mountChart(div, {
+    mountChart(div, {
       tooltip: Object.assign({}, HOVER_STYLE, { trigger: 'axis', axisPointer: { type: 'shadow' } }),
       legend: { top: 8, textStyle: { color: NAVY, fontSize: 11 } },
       grid: { left: 10, right: 14, top: 44, bottom: 8, containLabel: true },
@@ -899,7 +873,7 @@ function renderQuality() {
     wrap.appendChild(card);
   }
 
-  const q = S.meta.quality || {};
+  const q = S.meta ? S.meta.quality || {} : {};
   wrap.appendChild(document.createElement('hr')).className = 'divider';
   const errTitle = document.createElement('div');
   errTitle.className = 'st-section-title';
@@ -986,7 +960,6 @@ function renderWhatsApp() {
     return;
   }
   const ot = wa.filter((r) => /On-Time|On Time/i.test(get(r, 'WhatsApp SLA Status'))).length;
-  const lt = wa.filter((r) => /Late/i.test(get(r, 'WhatsApp SLA Status'))).length;
   const ov = wa.length ? ot / wa.length * 100 : 0;
   const achieved = ov >= 95;
   const arrow = achieved ? '▲' : '▼';
@@ -1004,7 +977,6 @@ function renderWhatsApp() {
       <span style="color:${acol};">${achieved ? 'Achieved' : 'Below Target'}</span></p>`;
   content.appendChild(overall);
 
-  // monthly cards, sorted by date
   const months = [];
   for (const r of wa) { const m = monthOf(get(r, 'D_Obj')); if (!months.includes(m)) months.push(m); }
   months.sort();
@@ -1058,7 +1030,6 @@ function renderSla() {
       Target: 95% &mdash; <span style="color:${acol};font-weight:900;">${achieved ? 'Achieved' : 'Below Target'}</span></p>`;
   content.appendChild(overall);
 
-  // monthly bar
   const items = sla.rows.map((r) => ({ name: r[mi] || '', value: parseNum(r[pi]) }));
   const card = document.createElement('div');
   card.className = 'chart-card';
@@ -1113,7 +1084,7 @@ function renderRedemption() {
 
 /* ============================== TICKET EXPLORER ============================== */
 function renderTable(headers, rows) {
-  if (!rows.length) return '<div class="empty-msg">No matching tickets</div>';
+  if (!rows || !rows.length) return '<div class="empty-msg">No matching tickets</div>';
   const th = headers.map((h) => `<th>${esc(h)}</th>`).join('');
   const tr = rows.map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join('')}</tr>`).join('');
   return `<table class="modern-table"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table>`;
@@ -1189,7 +1160,7 @@ function renderExplorer() {
 /* ============================== ACCESS MGMT ============================== */
 function renderAccessMgmt() {
   const content = $('#content');
-  const clients = S.auth.clients || {};
+  const clients = S.auth ? S.auth.clients || {} : {};
   const rows = Object.entries(clients).map(([pwd, c]) => [pwd, (c.projects || []).join(', '), c.is_vodafone ? '✅' : '—', c.logo ? '✅' : '—']);
   content.innerHTML = `<div class="page-title">🔐 Access Management</div>
     <div class="empty-msg">Manage access keys by editing <b>web/access.json</b> in the repository and pushing a change — the site reloads them automatically on next login.</div>
@@ -1201,7 +1172,6 @@ function renderAll() {
   disposeCharts();
   if (!S.meta || !S.tickets || !S.session) return;
 
-  // recompute base + applied filters
   S.ffBase = S.tickets.rows.filter(baseFilter);
 
   renderHeader();
@@ -1316,7 +1286,6 @@ function hideLoading() {
 
 /* ============================== INIT ============================== */
 async function boot() {
-  // reset UI state tied to the session
   const isClient = S.session.role === 'client';
   S.filters = { dateMode: isClient ? 'Last 3 months' : (S.session.role === 'admin' ? 'All time' : 'Last 3 months'),
     customStart: null, customEnd: null, merchant: [], project: [], branch: [], district: [], type: [], subtype: [], microtype: [], action: [], status: [] };
@@ -1332,7 +1301,6 @@ async function boot() {
     await loadData(false);
   } catch (e) {
     console.error(e);
-    // try to load again — data may not be built yet
   }
   renderAll();
   showLive();
@@ -1347,7 +1315,7 @@ async function init() {
   if (saved) {
     try {
       const sess = JSON.parse(saved);
-      const valid = sess.role === 'admin' || sess.role === 'user' || S.auth.clients[sess.key];
+      const valid = sess.role === 'admin' || sess.role === 'user' || (S.auth.clients && S.auth.clients[sess.key]);
       if (valid) {
         S.session = sess;
         if (sess.role === 'client') {
