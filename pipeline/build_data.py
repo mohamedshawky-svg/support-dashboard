@@ -8,15 +8,14 @@ under web/data/. Runs hourly via GitHub Actions; the website never touches
 Google Sheets directly.
 
 Outputs:
-  web/data/meta.json      build metadata, filter option lists, quality board parse
-  web/data/tickets.json   processed merchant+client ticket rows (columnar)
-  web/data/agent.json     agent_perf sheet (cols + rows)
-  web/data/sla.json       inbound_sla sheet (cols + rows)
-  web/data/redemption.json redemption sheet (cols + rows)
+    web/data/meta.json      build metadata, filter option lists, quality board parse
+    web/data/tickets.json   processed merchant+client ticket rows (columnar)
+    web/data/agent.json      agent_perf sheet (cols + rows)
+    web/data/sla.json        inbound_sla sheet (cols + rows)
+    web/data/redemption.json redemption sheet (cols + rows)
 """
 
 import concurrent.futures
-import gzip
 import json
 import math
 import os
@@ -261,19 +260,13 @@ def main():
     sla = rows_to_columnar(raw["inbound_sla"])
     redemption = rows_to_columnar(raw["redemption"])
 
-    def write_json(name, obj, gzip_level=9):
+    def write_json(name, obj):
         path = os.path.join(OUT, name)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(clean_json(obj), f, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
         size = os.path.getsize(path)
-        gz_path = path + ".gz"
-        with open(path, "rb") as f:
-            gz = gzip.compress(f.read(), gzip_level)
-        with open(gz_path, "wb") as f:
-            f.write(gz)
-        gz_size = len(gz)
-        print(f"  {name}: {size/1024:.0f} KB (gz {gz_size/1024:.0f} KB)")
-        return size, gz_size
+        print(f"  {name}: {size/1024:.0f} KB")
+        return size
 
     sizes = {}
     sizes["meta.json"] = write_json("meta.json", meta)
@@ -282,9 +275,8 @@ def main():
     sizes["sla.json"] = write_json("sla.json", sla)
     sizes["redemption.json"] = write_json("redemption.json", redemption)
 
-    total = sum(s[0] for s in sizes.values())
-    total_gz = sum(s[1] for s in sizes.values())
-    print(f"TOTAL: {total/1024:.0f} KB  (gz {total_gz/1024:.0f} KB)")
+    total = sum(sizes.values())
+    print(f"TOTAL: {total/1024:.0f} KB")
     print("Done.")
 
 
