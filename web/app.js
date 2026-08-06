@@ -16,7 +16,7 @@ const HOVER_STYLE = { backgroundColor:'#001e42', borderColor:'#00AEEF', textStyl
 const S = {
   auth: null, session: null, meta: null, tickets: null, colIdx: {},
   agent: null, sla: null, redemption: null,
-  filters: { dateMode:null, customStart:null, customEnd:null, merchant:[], project:[], branch:[], district:[], type:[], subtype:[], microtype:[], action:[], status:[] },
+  filters: { dateMode:'All time', customStart:null, customEnd:null, merchant:[], project:[], branch:[], district:[], type:[], subtype:[], microtype:[], action:[], status:[] },
   fSearch: {}, clickFilter: { col:null, val:null }, activeTab: 0, ovTeam: 0,
   drill: { merchant:null, client:null }, slideshow: false, slideIndex: 0, ffBase: null, charts: [],
 };
@@ -30,7 +30,11 @@ const inBlack = (v) => BLACKLIST.has(String(v == null ? '' : v).trim().toLowerCa
 const cleanVal = (v) => String(v == null ? '' : v).trim();
 
 function col(name) { return S.colIdx[name]; }
-function get(row, name) { const i = col(name); return i == null ? '' : row[i]; }
+function get(row, name) { 
+  if (!row) return '';
+  const i = col(name); 
+  return i == null ? '' : row[i]; 
+}
 
 function parseNum(v) {
   if (v == null) return 0;
@@ -44,15 +48,6 @@ function iso(d) {
   return `${y}-${m}-${dd}`;
 }
 
-function monthOf(isoStr) { return String(isoStr).slice(0, 7); }
-function monthName(isoStr) {
-  const m = monthOf(isoStr);
-  const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  if (m.length < 7) return m;
-  const idx = parseInt(m.slice(5, 7), 10) - 1;
-  return names[idx] || m;
-}
-
 /* ------------------------------ DATA LOADING ------------------------------ */
 async function fetchJson(url, bust) {
   const res = await fetch(url + (bust ? ('?v=' + Date.now()) : ''), { cache: bust ? 'no-store' : 'default' });
@@ -63,8 +58,6 @@ async function fetchJson(url, bust) {
 async function loadData(bust) {
   showLoading('Loading tickets…');
   S.meta = await fetchJson('./data/meta.json', bust).catch(() => fetchJson('data/meta.json', bust));
-  
-  // قراءة ملف JSON العادي مباشرة بدون فك ضغط
   S.tickets = await fetchJson('./data/tickets.json', bust).catch(() => fetchJson('data/tickets.json', bust));
 
   S.colIdx = {};
@@ -104,49 +97,21 @@ function baseFilter(row) {
 }
 
 function applyFilters(rows) {
+  if (!rows) return [];
   const f = S.filters;
   return rows.filter((r) => {
-    if (f.merchant.length && !f.merchant.includes(get(r, 'Merchant'))) return false;
-    if (f.project.length && !f.project.includes(get(r, 'Project'))) return false;
-    if (f.branch.length && !f.branch.includes(get(r, 'Branch User Name'))) return false;
-    if (f.district.length && !f.district.includes(get(r, 'District'))) return false;
-    if (f.type.length && !f.type.includes(get(r, 'Ticket type'))) return false;
-    if (f.subtype.length && !f.subtype.includes(get(r, 'Ticket subtype'))) return false;
-    if (f.microtype.length && !f.microtype.includes(get(r, 'Call Microtype'))) return false;
-    if (f.action.length && !f.action.includes(get(r, 'Action taken'))) return false;
-    if (f.status.length && !f.status.includes(get(r, 'Ticket_Status'))) return false;
-    if (S.clickFilter.col && get(r, S.clickFilter.col) !== S.clickFilter.val) return false;
+    if (f.merchant && f.merchant.length && !f.merchant.includes(get(r, 'Merchant'))) return false;
+    if (f.project && f.project.length && !f.project.includes(get(r, 'Project'))) return false;
+    if (f.branch && f.branch.length && !f.branch.includes(get(r, 'Branch User Name'))) return false;
+    if (f.district && f.district.length && !f.district.includes(get(r, 'District'))) return false;
+    if (f.type && f.type.length && !f.type.includes(get(r, 'Ticket type'))) return false;
+    if (f.subtype && f.subtype.length && !f.subtype.includes(get(r, 'Ticket subtype'))) return false;
+    if (f.microtype && f.microtype.length && !f.microtype.includes(get(r, 'Call Microtype'))) return false;
+    if (f.action && f.action.length && !f.action.includes(get(r, 'Action taken'))) return false;
+    if (f.status && f.status.length && !f.status.includes(get(r, 'Ticket_Status'))) return false;
+    if (S.clickFilter && S.clickFilter.col && get(r, S.clickFilter.col) !== S.clickFilter.val) return false;
     return true;
   });
-}
-
-function computeActiveFilters() {
-  const f = S.filters, active = {};
-  if (f.merchant.length) active.Merchant = f.merchant.join(', ');
-  if (f.project.length) active.Project = f.project.join(', ');
-  if (f.branch.length) active.Branch = f.branch.join(', ');
-  if (f.district.length) active.District = f.district.join(', ');
-  if (f.type.length) active['Ticket type'] = f.type.join(', ');
-  if (f.subtype.length) active['Ticket subtype'] = f.subtype.join(', ');
-  if (f.microtype.length) active['Ticket microtype'] = f.microtype.join(', ');
-  if (f.action.length) active.Action = f.action.join(', ');
-  if (f.status.length) active.Status = f.status.join(', ');
-  if (f.dateMode && f.dateMode !== 'All time') {
-    if (f.dateMode === 'Custom range') active.Date = `${f.customStart} → ${f.customEnd}`;
-    else active.Date = f.dateMode;
-  }
-  if (S.clickFilter.col) active[S.clickFilter.col] = S.clickFilter.val;
-  return active;
-}
-
-function cleanedUnique(rows, colName) {
-  const out = new Set();
-  if (!rows) return [];
-  for (const r of rows) {
-    const v = cleanVal(get(r, colName));
-    if (v && !inBlack(v)) out.add(v);
-  }
-  return Array.from(out).sort();
 }
 
 /* ------------------------------ AGGREGATION ------------------------------ */
@@ -175,11 +140,6 @@ function groupTop(rows, byCol, hoverCol, hoverN, { clean = true } = {}) {
   });
 }
 
-function topSafe(rows, colName) {
-  const arr = countBy(rows, colName, { clean: true });
-  return arr.length ? arr[0].name : 'N/A';
-}
-
 /* ============================== CHARTS ============================== */
 function disposeCharts() {
   S.charts.forEach((c) => { try { c.dispose(); } catch (e) {} });
@@ -187,12 +147,16 @@ function disposeCharts() {
 }
 
 function mountChart(dom, option) {
-  if (dom._chart) { try { dom._chart.dispose(); } catch (e) {} }
-  const chart = echarts.init(dom);
-  dom._chart = chart;
-  chart.setOption(option, true);
-  S.charts.push(chart);
-  return chart;
+  try {
+    if (dom._chart) { try { dom._chart.dispose(); } catch (e) {} }
+    const chart = echarts.init(dom);
+    dom._chart = chart;
+    chart.setOption(option, true);
+    S.charts.push(chart);
+    return chart;
+  } catch(err) {
+    console.error("Chart Render Error:", err);
+  }
 }
 
 function barColors(baseHex, n) {
@@ -246,7 +210,7 @@ function barCard(title, items, baseColor, tooltipFn, onClick) {
   div.className = 'chart';
   wrap.appendChild(div);
   const chart = mountChart(div, barSpec(title, items, baseColor, tooltipFn));
-  if (onClick) chart.on('click', (p) => { if (p.name != null) onClick(p.name); });
+  if (onClick && chart) chart.on('click', (p) => { if (p.name != null) onClick(p.name); });
   return wrap;
 }
 
@@ -257,7 +221,7 @@ function pieCard(title, items, tooltipFn, onClick) {
   div.className = 'chart';
   wrap.appendChild(div);
   const chart = mountChart(div, pieSpec(title, items, PIE_COLORS, tooltipFn));
-  if (onClick) chart.on('click', (p) => { if (p.name != null) onClick(p.name); });
+  if (onClick && chart) chart.on('click', (p) => { if (p.name != null) onClick(p.name); });
   return wrap;
 }
 
@@ -278,7 +242,8 @@ function submitLogin() {
 
 function renderSidebar() {
   const sb = $('#sidebar');
-  sb.className = 'sidebar' + (S.session.role === 'client' ? ' client' : '');
+  if (!sb) return;
+  sb.className = 'sidebar' + (S.session && S.session.role === 'client' ? ' client' : '');
   sb.innerHTML = `
     <div class="sb-logo"><img src="assets/logo_big.png" alt="Dsquares"></div>
     <div class="sb-live"><span class="dot"></span>LIVE &nbsp;·&nbsp; Auto</div>
@@ -292,12 +257,15 @@ function renderSidebar() {
     <hr class="sb-divider">
     <button class="sb-btn danger" id="btn-logout">🚪 Log Out</button>`;
 
-  $('#date-mode').addEventListener('change', (e) => { S.filters.dateMode = e.target.value; renderAll(); });
-  $('#btn-logout').addEventListener('click', () => { localStorage.removeItem('ds_session'); S.session = null; showLogin(); });
+  const dm = $('#date-mode');
+  if (dm) dm.addEventListener('change', (e) => { S.filters.dateMode = e.target.value; renderAll(); });
+  const lo = $('#btn-logout');
+  if (lo) lo.addEventListener('click', () => { localStorage.removeItem('ds_session'); S.session = null; showLogin(); });
 }
 
 function renderHeader() {
-  $('#dashboard-header').innerHTML = `<div class="dashboard-header">
+  const dh = $('#dashboard-header');
+  if (dh) dh.innerHTML = `<div class="dashboard-header">
     <h2>Support Analysis Dashboard</h2>
     <div style="margin-top:5px;"><span class="live-badge"><span class="live-dot"></span> LIVE</span></div>
   </div>`;
@@ -306,6 +274,7 @@ function renderHeader() {
 function renderTabs() {
   const tabs = ['Overview','Quality Board','WhatsApp MOM','Inbound SLA','Redemption Tracker','Ticket Explorer'];
   const bar = $('#tabbar');
+  if (!bar) return tabs;
   bar.innerHTML = '';
   tabs.forEach((t, i) => {
     const btn = document.createElement('button');
@@ -329,6 +298,7 @@ function getTeamRows(rows) {
 
 function renderOverview() {
   const content = $('#content');
+  if (!content) return;
   content.innerHTML = '';
 
   const subtabs = document.createElement('div');
@@ -357,11 +327,11 @@ function renderOverview() {
     </div>
     <div class="sc-card" style="--top-color:${BLUE}">
       <div class="sc-label">📞 Inbound Calls</div>
-      <div class="sc-value">${fmt(dataRows.filter(r => /Inbound|Call/i.test(get(r,'Ticket type')||'')).length)}</div>
+      <div class="sc-value">${fmt(dataRows.filter(r => /Inbound|Call/i.test(get(r,'Ticket type')||get(r,'Type')||'')).length)}</div>
     </div>
     <div class="sc-card" style="--top-color:${LIGHT}">
       <div class="sc-label">💬 WhatsApp</div>
-      <div class="sc-value">${fmt(dataRows.filter(r => /WhatsApp|App/i.test(get(r,'Ticket type')||'')).length)}</div>
+      <div class="sc-value">${fmt(dataRows.filter(r => /WhatsApp|App/i.test(get(r,'Ticket type')||get(r,'Type')||'')).length)}</div>
     </div>`;
   content.appendChild(scRow);
 
@@ -369,36 +339,44 @@ function renderOverview() {
   const grid = document.createElement('div');
   grid.className = 'chart-grid';
 
-  const m = groupTop(dataRows, 'Merchant', 'Call Microtype', 5);
-  if (m.length) grid.appendChild(barCard('🏪 Top Merchants', m, NAVY));
+  try {
+    const m = groupTop(dataRows, 'Merchant', 'Call Microtype', 5);
+    if (m.length) grid.appendChild(barCard('🏪 Top Merchants', m, NAVY, null, (val) => { S.filters.merchant = [val]; renderAll(); }));
 
-  const b = groupTop(dataRows, 'Branch User Name', 'Merchant', 5);
-  if (b.length) grid.appendChild(barCard('📍 Top Branches', b, LIGHT));
+    const b = groupTop(dataRows, 'Branch User Name', 'Merchant', 5);
+    if (b.length) grid.appendChild(barCard('📍 Top Branches', b, LIGHT, null, (val) => { S.filters.branch = [val]; renderAll(); }));
 
-  const p = groupTop(dataRows, 'Project', 'Call Microtype', 5);
-  if (p.length) grid.appendChild(barCard('🏢 Top Projects', p, NAVY));
+    const p = groupTop(dataRows, 'Project', 'Call Microtype', 5);
+    if (p.length) grid.appendChild(barCard('🏢 Top Projects', p, NAVY, null, (val) => { S.filters.project = [val]; renderAll(); }));
 
-  const tt = countBy(dataRows, 'Ticket type', { clean: true });
-  if (tt.length) grid.appendChild(pieCard('🎫 Ticket Type Share', tt));
+    const tt = countBy(dataRows, 'Ticket type', { clean: true });
+    if (tt.length) grid.appendChild(pieCard('🎫 Ticket Type Share', tt, null, (val) => { S.filters.type = [val]; renderAll(); }));
 
-  const su = groupTop(dataRows, 'Ticket subtype', 'Ticket type', 3);
-  if (su.length) grid.appendChild(barCard('🏷️ Top Subtypes', su, NAVY));
+    const su = groupTop(dataRows, 'Ticket subtype', 'Ticket type', 3);
+    if (su.length) grid.appendChild(barCard('🏷️ Top Subtypes', su, NAVY, null, (val) => { S.filters.subtype = [val]; renderAll(); }));
 
-  const mi = groupTop(dataRows, 'Call Microtype', 'Ticket subtype', 5);
-  if (mi.length) grid.appendChild(barCard('🔬 Top Microtypes', mi, LIGHT));
+    const mi = groupTop(dataRows, 'Call Microtype', 'Ticket subtype', 5);
+    if (mi.length) grid.appendChild(barCard('🔬 Top Microtypes', mi, LIGHT, null, (val) => { S.filters.microtype = [val]; renderAll(); }));
+  } catch (err) {
+    console.error("Error generating overview grid:", err);
+  }
 
   content.appendChild(grid);
 }
 
 /* ============================== MAIN RENDER ============================== */
 function renderAll() {
-  disposeCharts();
-  if (!S.tickets || !S.session) return;
-  S.ffBase = S.tickets.rows ? S.tickets.rows.filter(baseFilter) : [];
-  renderHeader();
-  renderSidebar();
-  renderTabs();
-  renderOverview();
+  try {
+    disposeCharts();
+    if (!S.tickets || !S.session) return;
+    S.ffBase = S.tickets.rows ? S.tickets.rows.filter(baseFilter) : [];
+    renderHeader();
+    renderSidebar();
+    renderTabs();
+    renderOverview();
+  } catch (e) {
+    console.error("Render error caught safely:", e);
+  }
 }
 
 function showLoading(msg) { $('#loading-screen').hidden = false; $('#app').hidden = true; $('#loading-status').textContent = msg; }
@@ -414,7 +392,8 @@ async function boot() {
 
 async function init() {
   S.auth = await fetchJson('access.json').catch(() => ({ admin: 'admin', user: 'user' }));
-  $('#login-btn').addEventListener('click', submitLogin);
+  const lb = $('#login-btn');
+  if (lb) lb.addEventListener('click', submitLogin);
   const saved = localStorage.getItem('ds_session');
   if (saved) {
     try { S.session = JSON.parse(saved); await boot(); return; } catch (e) {}
