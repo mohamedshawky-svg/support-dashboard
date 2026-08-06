@@ -1,0 +1,9 @@
+{
+  "michelin123": {
+    "projects": [
+      "Michelin"
+    ],
+    "is_vodafone": false,
+    "logo": "custom_logos\\michelin123.png"
+  }
+}
