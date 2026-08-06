@@ -1,7 +1,5 @@
 'use strict';
-/* Support Analysis Dashboard — static single-page app. Renders everything
-   client-side from pre-built JSON files (web/data/*) so it stays instant
-   no matter how large the dataset is. */
+/* Support Analysis Dashboard — static single-page app. */
 
 /* ============================== CONFIG ============================== */
 const NAVY = '#002147', BLUE = '#0055A4', LIGHT = '#00AEEF', RED = '#FF4B4B', GREEN = '#00873d';
@@ -16,23 +14,11 @@ const HOVER_STYLE = { backgroundColor:'#001e42', borderColor:'#00AEEF', textStyl
 
 /* ============================== STATE ============================== */
 const S = {
-  auth: null,
-  session: null,               // {role, key, projects, is_vodafone, logo}
-  meta: null,
-  tickets: null,               // {cols, rows}
-  colIdx: {},
+  auth: null, session: null, meta: null, tickets: null, colIdx: {},
   agent: null, sla: null, redemption: null,
-  filters: { dateMode:null, customStart:null, customEnd:null,
-             merchant:[], project:[], branch:[], district:[], type:[], subtype:[], microtype:[], action:[], status:[] },
-  fSearch: {},
-  clickFilter: { col:null, val:null },
-  activeTab: 0,
-  ovTeam: 0,                    // 0 = Merchant Support, 1 = Client Support
-  drill: { merchant:null, client:null },
-  slideshow: false,
-  slideIndex: 0,
-  ffBase: null,
-  charts: [],
+  filters: { dateMode:null, customStart:null, customEnd:null, merchant:[], project:[], branch:[], district:[], type:[], subtype:[], microtype:[], action:[], status:[] },
+  fSearch: {}, clickFilter: { col:null, val:null }, activeTab: 0, ovTeam: 0,
+  drill: { merchant:null, client:null }, slideshow: false, slideIndex: 0, ffBase: null, charts: [],
 };
 
 /* ============================== HELPERS ============================== */
@@ -71,30 +57,25 @@ function monthName(isoStr) {
 async function fetchJson(url, bust) {
   const res = await fetch(url + (bust ? ('?v=' + Date.now()) : ''), { cache: bust ? 'no-store' : 'default' });
   if (!res.ok) throw new Error('HTTP ' + res.status + ' for ' + url);
-  if (url.endsWith('.gz')) {
-    if (typeof DecompressionStream !== 'undefined') {
-      const blob = await res.blob();
-      const stream = blob.stream().pipeThrough(new DecompressionStream('gzip'));
-      const text = await new Response(stream).text();
-      return JSON.parse(text);
-    }
-    const res2 = await fetch(url.replace(/\.gz$/, ''), { cache: 'no-store' });
-    if (!res2.ok) throw new Error('fallback failed');
-    return await res2.json();
-  }
   return await res.json();
 }
 
 async function loadData(bust) {
   showLoading('Loading tickets…');
-  S.meta = await fetchJson('./data/meta.json', bust);
-  S.tickets = await fetchJson('./data/tickets.json.gz', bust);
+  S.meta = await fetchJson('./data/meta.json', bust).catch(() => fetchJson('data/meta.json', bust));
+  
+  try {
+    S.tickets = await fetchJson('./data/tickets.json', bust);
+  } catch(e) {
+    S.tickets = await fetchJson('./data/tickets.json.gz', bust);
+  }
+
   S.colIdx = {};
   S.tickets.cols.forEach((c, i) => { S.colIdx[c] = i; });
   showLoading('Loading quality data…');
-  S.agent = await fetchJson('./data/agent.json', bust);
-  S.sla = await fetchJson('./data/sla.json', bust);
-  S.redemption = await fetchJson('./data/redemption.json', bust);
+  S.agent = await fetchJson('./data/agent.json', bust).catch(() => ({}));
+  S.sla = await fetchJson('./data/sla.json', bust).catch(() => ({}));
+  S.redemption = await fetchJson('./data/redemption.json', bust).catch(() => ({}));
   hideLoading();
 }
 
@@ -281,96 +262,26 @@ function pieCard(title, items, tooltipFn, onClick) {
   return wrap;
 }
 
-/* ============================== RENDER: LOGIN ============================== */
-function showLogin() {
-  hideLoading();
-  $('#login-screen').hidden = false;
-  $('#app').hidden = true;
-}
-
+/* ============================== LOGIN & SIDEBAR ============================== */
+function showLogin() { hideLoading(); $('#login-screen').hidden = false; $('#app').hidden = true; }
 function submitLogin() {
   const key = cleanVal($('#login-key').value);
-  const err = $('#login-error');
   if (!key) return;
-  if (key === S.auth.admin) { S.session = { role: 'admin', key }; }
-  else if (key === S.auth.user) { S.session = { role: 'user', key }; }
+  if (key === S.auth.admin) S.session = { role: 'admin', key };
+  else if (key === S.auth.user) S.session = { role: 'user', key };
   else if (S.auth.clients && S.auth.clients[key]) {
     const c = S.auth.clients[key];
     S.session = { role: 'client', key, projects: c.projects, is_vodafone: !!c.is_vodafone, logo: c.logo || null };
-  } else { err.hidden = false; return; }
-  err.hidden = true;
+  } else { $('#login-error').hidden = false; return; }
   localStorage.setItem('ds_session', JSON.stringify({ role: S.session.role, key }));
   boot();
 }
 
-/* ============================== RENDER: SIDEBAR ============================== */
-const MSEL_LABEL = { merchant:'🏪 Merchant', project:'🏢 Project', branch:'📍 Branch', district:'🗺️ District', type:'🎫 Ticket type', subtype:'🏷️ Ticket subtype', microtype:'🔬 Ticket microtype', action:'🎬 Action taken', status:'🎫 Ticket Status' };
-const MSEL_COL = { merchant:'Merchant', project:'Project', branch:'Branch User Name', district:'District', type:'Ticket type', subtype:'Ticket subtype', microtype:'Call Microtype', action:'Action taken', status:'Ticket_Status' };
-
-function mselOptionsHtml(name, colName, selected, search) {
-  const opts = colName ? cleanedUnique(S.ffBase, colName) : [];
-  const q = (search || '').toLowerCase();
-  const filtered = opts.filter((o) => o.toLowerCase().includes(q));
-  const optsHtml = filtered.map((o) => {
-    const checked = selected.includes(o) ? 'checked' : '';
-    return `<label class="msel-opt"><input type="checkbox" data-f="${name}" data-v="${esc(o)}" ${checked}><span>${esc(o)}</span></label>`;
-  }).join('');
-  return optsHtml || '<div class="msel-empty">No options</div>';
-}
-
-function bindMselBehaviors(sb) {
-  $$('.msel', sb).forEach((box) => {
-    const name = box.dataset.msel;
-    box.dataset.mselCol = MSEL_COL[name] || '';
-    box.dataset.mselLabel = MSEL_LABEL[name] || name;
-  });
-  $$('.msel-head', sb).forEach((hd) => {
-    hd.addEventListener('click', () => { hd.closest('.msel').classList.toggle('open'); });
-  });
-  $$('.msel-search', sb).forEach((inp) => {
-    inp.addEventListener('input', () => {
-      const name = inp.dataset.s;
-      S.fSearch[name] = inp.value;
-      const box = inp.closest('.msel');
-      const selected = S.filters[name];
-      box.querySelector('.msel-body').innerHTML =
-        `<input class="msel-search" data-s="${name}" placeholder="Search…" value="${esc(inp.value)}">
-         ${mselOptionsHtml(name, box.dataset.mselCol, selected, inp.value)}`;
-      bindMselBehaviors(box);
-      bindCheckboxes();
-    });
-  });
-}
-
 function renderSidebar() {
   const sb = $('#sidebar');
-  const role = S.session.role;
-  const isClient = role === 'client';
-  sb.className = 'sidebar' + (isClient ? ' client' : '');
-
-  const logoHtml = isClient && S.session.logo
-    ? `<div class="sb-logo"><img src="assets/${esc(S.session.logo)}" alt="logo"></div>`
-    : `<div class="sb-logo"><img src="assets/logo_big.png" alt="Dsquares"></div>`;
-
-  const mselHtml = (name, colName, label) => {
-    const selected = S.filters[name];
-    const search = S.fSearch[name] || '';
-    return `<label class="f-label">${label}</label>
-      <div class="msel" data-msel="${name}">
-        <div class="msel-head">${label} <span class="cnt">${selected.length ? selected.length : ''}</span></div>
-        <div class="msel-body">
-          <input class="msel-search" data-s="${name}" placeholder="Search…" value="${esc(search)}">
-          ${mselOptionsHtml(name, colName, selected, search)}
-        </div>
-      </div>`;
-  };
-
-  let fProjectHtml = '';
-  if (!isClient || S.session.is_vodafone) {
-    fProjectHtml = mselHtml('project', 'Project', '🏢 Project');
-  }
-
-  let html = `${logoHtml}
+  sb.className = 'sidebar' + (S.session.role === 'client' ? ' client' : '');
+  sb.innerHTML = `
+    <div class="sb-logo"><img src="assets/logo_big.png" alt="Dsquares"></div>
     <div class="sb-live"><span class="dot"></span>LIVE &nbsp;·&nbsp; Auto</div>
     <div class="sb-sec">Filters</div>
     <label class="f-label">📅 Date filter</label>
@@ -379,729 +290,47 @@ function renderSidebar() {
         ${DATE_PRESETS.map((d) => `<option value="${d}" ${S.filters.dateMode === d ? 'selected' : ''}>${d}</option>`).join('')}
       </select>
     </div>
-    ${S.filters.dateMode === 'Custom range' ? `
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
-        <input type="date" class="select-sel" id="cust-start" value="${esc(S.filters.customStart || '')}" style="color:#fff;background:${NAVY};">
-        <input type="date" class="select-sel" id="cust-end" value="${esc(S.filters.customEnd || '')}" style="color:#fff;background:${NAVY};">
-      </div>` : ''}
-    ${mselHtml('merchant', 'Merchant', '🏪 Merchant')}
-    ${fProjectHtml}
-    ${isClient ? '' : mselHtml('branch', 'Branch User Name', '📍 Branch')}
-    ${mselHtml('district', 'District', '🗺️ District')}
-    ${mselHtml('type', 'Ticket type', '🎫 Ticket type')}
-    ${mselHtml('subtype', 'Ticket subtype', '🏷️ Ticket subtype')}
-    ${mselHtml('microtype', 'Call Microtype', '🔬 Ticket microtype')}
-    ${mselHtml('action', 'Action taken', '🎬 Action taken')}
-    ${isClient ? '' : mselHtml('status', 'Ticket_Status', '🎫 Ticket Status')}
-    <hr class="sb-divider">
-    <button class="sb-btn" id="btn-refresh">🔄 Refresh Data Now</button>
-    <button class="sb-btn" id="btn-slideshow">${S.slideshow ? '⏹ Stop Slideshow' : '▶️ Start Slideshow'}</button>
-    ${role === 'admin' ? `<button class="sb-btn" id="btn-mgmt">🔐 Access Management</button>` : ''}
     <hr class="sb-divider">
     <button class="sb-btn danger" id="btn-logout">🚪 Log Out</button>`;
 
-  sb.innerHTML = html;
-
-  $('#date-mode').addEventListener('change', (e) => {
-    S.filters.dateMode = e.target.value;
-    if (S.filters.dateMode !== 'Custom range') { S.filters.customStart = S.filters.customEnd = null; }
-    renderAll();
-  });
-  const cs = $('#cust-start'), ce = $('#cust-end');
-  if (cs) cs.addEventListener('change', (e) => { S.filters.customStart = e.target.value; renderAll(); });
-  if (ce) ce.addEventListener('change', (e) => { S.filters.customEnd = e.target.value; renderAll(); });
-
-  bindMselBehaviors(sb);
-  bindCheckboxes();
-
-  $('#btn-refresh').addEventListener('click', async () => {
-    const btn = $('#btn-refresh');
-    btn.textContent = '↻ Refreshing…';
-    btn.disabled = true;
-    try { await loadData(true); } catch (e) { console.error(e); }
-    btn.textContent = '🔄 Refresh Data Now';
-    btn.disabled = false;
-    renderAll();
-  });
-  $('#btn-slideshow').addEventListener('click', () => {
-    S.slideshow = !S.slideshow;
-    S.slideIndex = 0;
-    if (!S.slideshow && slideTimer) { clearInterval(slideTimer); slideTimer = null; }
-    renderAll();
-  });
-  const bm = $('#btn-mgmt');
-  if (bm) bm.addEventListener('click', () => {
-    if (S.activeTab === 99) S.activeTab = 0; else S.activeTab = 99;
-    renderAll();
-  });
-  $('#btn-logout').addEventListener('click', () => {
-    if (slideTimer) { clearInterval(slideTimer); slideTimer = null; }
-    S.slideshow = false;
-    localStorage.removeItem('ds_session');
-    S.session = null;
-    showLogin();
-  });
+  $('#date-mode').addEventListener('change', (e) => { S.filters.dateMode = e.target.value; renderAll(); });
+  $('#btn-logout').addEventListener('click', () => { localStorage.removeItem('ds_session'); S.session = null; showLogin(); });
 }
 
-function bindCheckboxes() {
-  $$('.msel-opt input[data-f]').forEach((cb) => {
-    cb.removeEventListener('change', handleFilterChange);
-    cb.addEventListener('change', handleFilterChange);
-  });
-}
-
-function handleFilterChange(e) {
-  const f = e.target.dataset.f;
-  const v = e.target.dataset.v;
-  const arr = S.filters[f];
-  if (e.target.checked) { if (!arr.includes(v)) arr.push(v); }
-  else { S.filters[f] = arr.filter((x) => x !== v); }
-  renderAll();
-}
-
-/* ============================== RENDER: HEADER + TABS ============================== */
 function renderHeader() {
-  const hd = $('#dashboard-header');
-  const updated = S.meta ? S.meta.updated : '';
-  hd.innerHTML = `<div class="dashboard-header">
-    <img src="assets/logo_small.png" width="34" alt="" onerror="this.style.display='none'">
+  $('#dashboard-header').innerHTML = `<div class="dashboard-header">
     <h2>Support Analysis Dashboard</h2>
-    <div style="display:flex;justify-content:center;align-items:center;gap:10px;margin-top:5px;flex-wrap:wrap;">
-      <span class="live-badge"><span class="live-dot"></span> LIVE</span>
-      <span class="sub-meta">Last updated: ${esc(updated)} | Auto</span>
-    </div>
+    <div style="margin-top:5px;"><span class="live-badge"><span class="live-dot"></span> LIVE</span></div>
   </div>`;
 }
 
-function tabsForRole() {
-  if (S.session.role === 'admin') return ['Overview','Quality Board','WhatsApp MOM','Inbound SLA','Redemption Tracker','Ticket Explorer'];
-  if (S.session.role === 'user') return ['Overview','Ticket Explorer'];
-  return null;
-}
-
 function renderTabs() {
-  const tabs = tabsForRole();
+  const tabs = ['Overview','Quality Board','WhatsApp MOM','Inbound SLA','Redemption Tracker','Ticket Explorer'];
   const bar = $('#tabbar');
   bar.innerHTML = '';
-  const tabDefs = tabs.map((t, i) => {
+  tabs.forEach((t, i) => {
     const btn = document.createElement('button');
     btn.className = 'tab' + (i === S.activeTab ? ' active' : '');
     btn.textContent = `${TAB_EMOJI[t] || ''} ${t}`;
     btn.addEventListener('click', () => { S.activeTab = i; renderAll(); });
     bar.appendChild(btn);
-    return { name: t, idx: i };
   });
-  if (S.activeTab >= tabDefs.length) S.activeTab = 0;
-  return tabDefs;
-}
-
-/* ============================== SCORECARDS ============================== */
-function cardHtml(title, value, border, lines, center, target) {
-  const num = parseNum(value);
-  const hasPct = /%/.test(value);
-  const isNum = value != null && String(value) !== '' && !isNaN(parseFloat(String(value).replace(/[%,]/g, ''))) && !/^[A-Za-z]/.test(value);
-  const dataAttrs = isNum ? `data-target="${num}" data-suffix="${hasPct ? '%' : ''}"` : '';
-  let insightHtml = '';
-  if (lines && lines.length) {
-    insightHtml = '<div class="sc-divider"></div>' + lines.map(([t, c]) => `<div class="sc-insight" style="color:${c}">${esc(t)}</div>`).join('');
-  }
-  return `<div class="sc-card${center ? ' center' : ''}" style="--top-color:${border}">
-    <div class="sc-label">${title}</div>
-    <div class="sc-value${target ? ' small' : ''}" ${dataAttrs}>${esc(value)}</div>${insightHtml}</div>`;
-}
-
-function animateValues(root) {
-  $$('.sc-value[data-target]', root).forEach((el) => {
-    if (el.dataset.done) return;
-    el.dataset.done = '1';
-    const target = parseFloat(el.dataset.target);
-    const suffix = el.dataset.suffix || '';
-    const isFloat = String(el.dataset.target).indexOf('.') > -1;
-    let cur = 0;
-    const steps = 50, dur = 800, step = target / steps;
-    const iv = setInterval(() => {
-      cur = Math.min(cur + step, target);
-      el.textContent = isFloat ? cur.toFixed(1) + suffix : Math.round(cur).toLocaleString() + suffix;
-      if (cur >= target) clearInterval(iv);
-    }, dur / steps);
-  });
+  return tabs;
 }
 
 /* ============================== OVERVIEW ============================== */
-function buildOverviewCharts(ffDrill, clientMode, isVf) {
-  const charts = [];
-  const hoverHeader = () => (p) => `<b>${esc(p[0].name)}</b><br>${fmt(p[0].value)}<br><br>${p[0].data.hover || ''}`;
-  const clickF = (colName) => (val) => { S.clickFilter = { col: colName, val }; renderAll(); };
-
-  if (clientMode === 'client') {
-    const m = groupTop(ffDrill, 'Merchant', 'Call Microtype', 5);
-    if (m.length) charts.push({ title: '🏪 1. Top 10 Merchants', type: 'bar', items: m, base: NAVY, tooltip: hoverHeader(), click: clickF('Merchant'), wide: false });
-    const b = groupTop(ffDrill, 'District', 'Merchant', 6);
-    if (b.length) charts.push({ title: '📍 2. Top 10 Branches', type: 'bar', items: b, base: LIGHT, tooltip: hoverHeader(), click: clickF('District'), wide: false });
-    if (isVf) {
-      const p = groupTop(ffDrill, 'Project', 'Call Microtype', 5);
-      if (p.length) charts.push({ title: '🏢 3. Top 10 Projects', type: 'bar', items: p, base: NAVY, tooltip: hoverHeader(), click: clickF('Project'), wide: false });
-      const tt = countBy(ffDrill, 'Ticket type', { clean: true });
-      if (tt.length) charts.push({ title: '🎫 4. Ticket Type Share', type: 'pie', items: tt, wide: false });
-      const su = groupTop(ffDrill, 'Ticket subtype', 'Ticket type', 3);
-      if (su.length) charts.push({ title: '🏷️ 5. Top 10 Subtypes', type: 'bar', items: su, base: NAVY, tooltip: hoverHeader(), click: clickF('Ticket subtype'), wide: false });
-      const mi = groupTop(ffDrill, 'Call Microtype', 'Ticket subtype', 5);
-      if (mi.length) charts.push({ title: '🔬 6. Top 10 Microtypes', type: 'bar', items: mi, base: LIGHT, tooltip: hoverHeader(), click: clickF('Call Microtype'), wide: false });
-      const ac = countBy(ffDrill, 'Action taken', { clean: true, limit: 10 });
-      if (ac.length) charts.push({ title: '🎬 7. Key Actions Taken', type: 'bar', items: ac, base: NAVY, wide: true });
-    } else {
-      const tt = countBy(ffDrill, 'Ticket type', { clean: true });
-      if (tt.length) charts.push({ title: '🎫 Ticket Type', type: 'pie', items: tt, wide: false });
-      const su = groupTop(ffDrill, 'Ticket subtype', 'Ticket type', 3);
-      if (su.length) charts.push({ title: '🏷️ Top Subtypes', type: 'bar', items: su, base: NAVY, tooltip: hoverHeader(), click: clickF('Ticket subtype'), wide: false });
-      const mi = groupTop(ffDrill, 'Call Microtype', 'Ticket subtype', 5);
-      if (mi.length) charts.push({ title: '🔬 Top Microtypes', type: 'bar', items: mi, base: LIGHT, tooltip: hoverHeader(), click: clickF('Call Microtype'), wide: false });
-      const ac = countBy(ffDrill, 'Action taken', { clean: true, limit: 10 });
-      if (ac.length) charts.push({ title: '🎬 Action Taken', type: 'bar', items: ac, base: NAVY, wide: false });
-    }
-  } else {
-    const branchCol = clientMode === true ? 'District' : 'Branch User Name';
-    const m = groupTop(ffDrill, 'Merchant', 'Call Microtype', 5);
-    if (m.length) charts.push({ title: '🏪 1. Top 10 Merchants', type: 'bar', items: m, base: NAVY, tooltip: hoverHeader(), click: clickF('Merchant'), wide: false });
-    const b = groupTop(ffDrill, branchCol, 'Merchant', 5);
-    if (b.length) charts.push({ title: '📍 2. Top 10 Branches', type: 'bar', items: b, base: LIGHT, tooltip: hoverHeader(), click: clickF(branchCol), wide: false });
-    const p = groupTop(ffDrill, 'Project', 'Call Microtype', 5);
-    if (p.length) charts.push({ title: '🏢 3. Top 10 Projects', type: 'bar', items: p, base: NAVY, tooltip: hoverHeader(), click: clickF('Project'), wide: false });
-    const tt = countBy(ffDrill, 'Ticket type', { clean: true });
-    if (tt.length) charts.push({ title: '🎫 4. Ticket Type Share', type: 'pie', items: tt, wide: false });
-    const su = groupTop(ffDrill, 'Ticket subtype', 'Ticket type', 3);
-    if (su.length) charts.push({ title: '🏷️ 5. Top 10 Subtypes', type: 'bar', items: su, base: NAVY, tooltip: hoverHeader(), click: clickF('Ticket subtype'), wide: false });
-    const mi = groupTop(ffDrill, 'Call Microtype', 'Ticket subtype', 5);
-    if (mi.length) charts.push({ title: '🔬 6. Top 10 Microtypes', type: 'bar', items: mi, base: LIGHT, tooltip: hoverHeader(), click: clickF('Call Microtype'), wide: false });
-    const ac = countBy(ffDrill, 'Action taken', { clean: true, limit: 10 });
-    if (ac.length) charts.push({ title: '🎬 7. Key Actions Taken', type: 'bar', items: ac, base: NAVY, wide: true });
-  }
-  return charts;
-}
-
-function renderChartCard(spec) {
-  if (spec.type === 'pie') {
-    return pieCard(spec.title, spec.items, spec.tooltip, spec.click);
-  }
-  const hoverFn = spec.tooltip ? (p) => {
-    const it = p[0];
-    const hover = it && it.data && it.data.hover ? `<br><br>${it.data.hover}` : '';
-    return `<b>${esc(it.name)}</b><br>${fmt(it.value)}${hover}`;
-  } : undefined;
-  return barCard(spec.title, spec.items, spec.base, hoverFn, spec.click);
-}
-
-function renderVolumeTrend(rows, teamKey) {
-  const daily = countBy(rows, 'D_Obj', { clean: false });
-  daily.sort((a, b) => b.value - a.value);
-  const peak = daily.slice(0, 20).sort((a, b) => (a.name < b.name ? -1 : 1));
-  if (!peak.length) return { wrap: null, dates: [] };
-  const items = peak.map((d) => {
-    const sub = rows.filter((r) => get(r, 'D_Obj') === d.name);
-    const lines = countBy(sub, 'Call Microtype', { clean: true, limit: 5 }).map((x) => '• ' + x.name + ': ' + fmt(x.value));
-    return { name: d.name, value: d.value, hover: lines.join('<br>') };
-  });
-  const wrap = document.createElement('div');
-  wrap.className = 'chart-card';
-  const div = document.createElement('div');
-  div.className = 'chart';
-  wrap.appendChild(div);
-  const chart = mountChart(div, barSpec('📊 Volume Trend (Peak Days)', items, NAVY, (p) => {
-    const it = p[0];
-    const hover = it && it.data && it.data.hover ? `<br><br>${it.data.hover}` : '';
-    return `<b>${esc(it.name)}</b><br>${fmt(it.value)}${hover}`;
-  }));
-  chart.on('click', (p) => { if (p.name) { S.drill[teamKey] = p.name; goExplorer(); } });
-  return { wrap, dates: peak.map((d) => d.name) };
-}
-
-function renderStatusPie(ffDrill, onClick) {
-  const sc = countBy(ffDrill, 'Ticket_Status', { clean: false });
-  if (!sc.length) return null;
-  const items = sc.map((s) => {
-    const sub = ffDrill.filter((r) => get(r, 'Ticket_Status') === s.name);
-    const lines = countBy(sub, 'Action taken', { clean: true, limit: 6 }).map((x) => '• ' + x.name + ': ' + fmt(x.value));
-    return { name: s.name, value: s.value, hover: lines.length ? lines.join('<br>') : 'No actions' };
-  });
-  const colors = items.map((s) => (s.name === 'Closed' ? NAVY : RED));
-  const wrap = document.createElement('div');
-  wrap.className = 'chart-card';
-  const div = document.createElement('div');
-  div.className = 'chart';
-  wrap.appendChild(div);
-  const chart = mountChart(div, pieSpec('🎫 Live Ticket Status', items, colors, (p) => {
-    return `<b>${esc(p.name)}</b><br>${fmt(p.value)}<br>${p.percent == null ? '' : p.percent.toFixed(2) + '%'}<br><br><b>Top Actions:</b><br>${p.data.hover || 'No actions'}`;
-  }));
-  if (onClick) chart.on('click', (p) => { if (p.name === 'Open' || p.name === 'Closed') onClick(p.name); });
-  return wrap;
-}
-
-function renderTeamOverview(dataRows, opts) {
-  const { clientMode, teamKey } = opts;
-  const content = $('#content');
-  const frag = document.createDocumentFragment();
-
-  const activeFilters = computeActiveFilters();
-  const hasFilter = Object.keys(activeFilters).length > 0;
-  const baseLen = S.ffBase ? S.ffBase.length : 0;
-  const dataLen = dataRows.length;
-
-  const inboundAll = dataRows.filter((r) => /Inbound|Call/i.test(get(r, 'Type') || ''));
-  const waAll = dataRows.filter((r) => /WhatsApp|App/i.test(get(r, 'Type') || ''));
-  const inboundBase = S.ffBase ? S.ffBase.filter((r) => /Inbound|Call/i.test(get(r, 'Type') || '')) : [];
-  const waBase = S.ffBase ? S.ffBase.filter((r) => /WhatsApp|App/i.test(get(r, 'Type') || '')) : [];
-
-  const analysis = (n, base) => {
-    if (!hasFilter || !n) return [];
-    const lines = [];
-    lines.push([(base ? (n / base * 100) : 0).toFixed(1) + '% of all tickets', NAVY]);
-    const mm = {};
-    for (const r of dataRows) { const m = monthOf(get(r, 'D_Obj')); mm[m] = (mm[m] || 0) + 1; }
-    let best = null;
-    for (const k in mm) if (!best || mm[k] > best[1]) best = [k, mm[k]];
-    if (best) lines.push([`Peak: ${best[0]} (${fmt(best[1])} tickets)`, GREEN]);
-    return lines;
-  };
-
-  const badgeHtml = Object.entries(activeFilters).map(([k, v]) => `<span class="filter-badge">${esc(k)}: ${esc(v)}</span>`).join('');
-  const badges = document.createElement('div');
-  badges.style.margin = '0 0 8px';
-  badges.innerHTML = badgeHtml;
-  if (badgeHtml) frag.appendChild(badges);
-
-  if (S.clickFilter.col) {
-    const cf = document.createElement('div');
-    cf.className = 'click-filter-banner';
-    cf.innerHTML = `<span>🔍 ${esc(S.clickFilter.col)}: <b>${esc(S.clickFilter.val)}</b></span>
-      <button class="clear-btn" id="clear-click-filter">✕ Clear Chart Filter</button>`;
-    frag.appendChild(cf);
-  }
-
-  const scRow = document.createElement('div');
-  if (clientMode === 'client') {
-    scRow.className = 'sc-row center';
-    const topM = topSafe(dataRows, 'Merchant');
-    const topT = topSafe(dataRows, 'Ticket type');
-    scRow.innerHTML = cardHtml('📋 Total Tickets', fmt(dataLen), NAVY, analysis(dataLen, baseLen), true)
-      + cardHtml('🏪 Top Merchant', topM, BLUE, [], true, true)
-      + cardHtml('🎫 Top Ticket Type', topT, LIGHT, [], true, true);
-  } else if (clientMode === true) {
-    scRow.className = 'sc-row center';
-    const rs = dataRows.filter((r) => /Within|Resolved/i.test(get(r, 'Resolution status') || '')).length;
-    const urgent = dataRows.filter((r) => /Urgent|High/i.test(get(r, 'Priority') || '')).length;
-    scRow.innerHTML = cardHtml('📋 Total Tickets', fmt(dataLen), NAVY, analysis(dataLen, baseLen), true)
-      + cardHtml('🔧 Resolution Status', fmt(rs), BLUE, [], true)
-      + cardHtml('🚨 Urgent Alert', fmt(urgent), RED, [], true);
-  } else {
-    scRow.className = 'sc-row';
-    let redVal = 'N/A';
-    if (S.redemption && S.redemption.cols.includes('Total Redemption Amount') && S.redemption.rows.length) {
-      redVal = fmt(Math.round(parseNum(S.redemption.rows[0][S.redemption.cols.indexOf('Total Redemption Amount')])));
-    }
-    scRow.innerHTML = cardHtml('📋 Total Tickets', fmt(dataLen), NAVY, analysis(dataLen, baseLen), false)
-      + cardHtml('📞 Inbound Calls', fmt(inboundAll.length), BLUE, analysis(inboundAll.length, inboundBase.length), false)
-      + cardHtml('💬 WhatsApp', fmt(waAll.length), LIGHT, analysis(waAll.length, waBase.length), false)
-      + cardHtml('💰 Total Redemption Value', redVal, '#00c06a', [], false);
-  }
-  frag.appendChild(scRow);
-
-  let ffDrill = dataRows;
-  if (clientMode !== 'client') {
-    const vol = renderVolumeTrend(dataRows, teamKey);
-    if (vol.wrap) {
-      vol.wrap.style.gridColumn = '1/-1';
-      frag.appendChild(vol.wrap);
-    }
-    const drillRow = document.createElement('div');
-    drillRow.className = 'drill-row';
-    const curDrill = S.drill[teamKey] || 'All Data';
-    drillRow.innerHTML = `<label>📅 Drill down by Peak Day:</label>
-      <select class="select-sel" id="drill-sel" style="background:${NAVY};color:#fff;border-radius:8px;padding:7px 10px;font-size:12px;max-width:260px;">
-        <option value="All Data">All Data</option>
-        ${(vol.dates || []).map((d) => `<option value="${d}" ${curDrill === d ? 'selected' : ''}>${d}</option>`).join('')}
-      </select>`;
-    frag.appendChild(drillRow);
-    ffDrill = curDrill === 'All Data' ? dataRows : dataRows.filter((r) => get(r, 'D_Obj') === curDrill);
-    const drillSel = drillRow.querySelector('#drill-sel');
-    drillSel.addEventListener('change', (e) => {
-      const v = e.target.value;
-      S.drill[teamKey] = v === 'All Data' ? null : v;
-      if (v !== 'All Data') goExplorer(); else renderAll();
-    });
-
-    const statusCard = renderStatusPie(ffDrill, (s) => { S.clickFilter = { col: 'Ticket_Status', val: s }; renderAll(); });
-    if (statusCard) {
-      const statusWrap = document.createElement('div');
-      statusWrap.style.cssText = 'display:flex;justify-content:center;';
-      statusCard.style.width = 'min(560px,100%)';
-      statusWrap.appendChild(statusCard);
-      frag.appendChild(statusWrap);
-    }
-  }
-
-  const isVf = !!S.session.is_vodafone;
-  const specs = buildOverviewCharts(ffDrill, clientMode, isVf);
-  if (specs.length) {
-    const grid = document.createElement('div');
-    grid.className = 'chart-grid';
-    specs.forEach((spec) => {
-      const card = renderChartCard(spec);
-      if (spec.wide) card.classList.add('wide');
-      grid.appendChild(card);
-    });
-    frag.appendChild(grid);
-  }
-
-  content.appendChild(frag);
-  animateValues(frag);
-
-  const cb = $('#clear-click-filter');
-  if (cb) cb.addEventListener('click', () => { S.clickFilter = { col: null, val: null }; renderAll(); });
-}
-
-function goExplorer() {
-  const tabs = tabsForRole();
-  const idx = tabs.indexOf('Ticket Explorer');
-  if (idx >= 0) { S.activeTab = idx; }
-  renderAll();
-}
-
-function renderClientSection() {
-  const content = $('#content');
-  content.innerHTML = '';
-  const bar = $('#tabbar');
-  bar.innerHTML = '';
-
-  const tabsWrap = document.createElement('div');
-  tabsWrap.className = 'ov-subtabs';
-  const mk = (label, idx) => {
-    const b = document.createElement('button');
-    b.className = 'ov-subbtn' + (S.ovTeam === idx ? ' active' : '');
-    b.textContent = label;
-    b.addEventListener('click', () => { S.ovTeam = idx; S.slideIndex = 0; renderAll(); });
-    return b;
-  };
-  tabsWrap.appendChild(mk('🏪 Merchant Support', 0));
-  tabsWrap.appendChild(mk('🤝 Client Support', 1));
-  content.appendChild(tabsWrap);
-
-  const ff = applyFilters(S.ffBase);
-  const team = ff.filter((r) => get(r, '_team') === (S.ovTeam === 0 ? 'merchant' : 'client'));
-  if (S.slideshow) {
-    renderSlideDeck(team, S.ovTeam === 0 ? 'merchant' : 'client', 'client');
-    scheduleSlideshow();
-    return;
-  }
-  renderTeamOverview(team, { clientMode: 'client', drillTab: S.ovTeam === 0 ? 'Merchant Support' : 'Client Support', teamKey: S.ovTeam === 0 ? 'merchant' : 'client' });
+function getTeamRows(rows) {
+  if (!rows || !rows.length) return [];
+  const teamIdx = col('_team');
+  if (teamIdx == null) return rows; // Fallback: return all rows if _team column missing
+  const target = S.ovTeam === 0 ? 'merchant' : 'client';
+  const filtered = rows.filter((r) => String(r[teamIdx]).toLowerCase() === target);
+  return filtered.length ? filtered : rows; // Fallback if team filter returns empty
 }
 
 function renderOverview() {
   const content = $('#content');
   content.innerHTML = '';
-
-  if (S.session.role === 'client') { renderClientSection(); return; }
-
-  const subtabs = document.createElement('div');
-  subtabs.className = 'ov-subtabs';
-  const mk = (label, idx) => {
-    const b = document.createElement('button');
-    b.className = 'ov-subbtn' + (S.ovTeam === idx ? ' active' : '');
-    b.textContent = label;
-    b.addEventListener('click', () => { S.ovTeam = idx; S.slideIndex = 0; renderAll(); });
-    return b;
-  };
-  subtabs.appendChild(mk('🏪 Merchant Support', 0));
-  subtabs.appendChild(mk('🤝 Client Support', 1));
-  content.appendChild(subtabs);
-
-  const ff = applyFilters(S.ffBase);
-  const teamRows = ff.filter((r) => get(r, '_team') === (S.ovTeam === 0 ? 'merchant' : 'client'));
-
-  const clientMode = S.ovTeam === 1;
-  if (S.slideshow) {
-    renderSlideDeck(teamRows, S.ovTeam === 0 ? 'merchant' : 'client', clientMode ? true : false);
-    scheduleSlideshow();
-    return;
-  }
-  renderTeamOverview(teamRows, {
-    clientMode: clientMode ? true : false,
-    drillTab: S.ovTeam === 0 ? 'Merchant Support' : 'Client Support',
-    teamKey: S.ovTeam === 0 ? 'merchant' : 'client',
-  });
-}
-
-/* ============================== QUALITY BOARD ============================== */
-function renderQuality() {
-  const content = $('#content');
-  content.innerHTML = `<div class="page-title">🏆 Agent Quality Board</div>`;
-  const wrap = document.createElement('div');
-  content.appendChild(wrap);
-
-  if (!S.agent || !S.agent.summary) {
-    wrap.innerHTML = '<div class="empty-msg">No agent performance data available</div>';
-    return;
-  }
-  const g = S.agent.summary;
-  const mgrid = document.createElement('div');
-  mgrid.className = 'mgrid4';
-  mgrid.innerHTML =
-    `<div class="mcard" style="--c:${NAVY};"><div class="ml">Avg EC%</div><div class="mv">${g.avg_ec == null ? 'N/A' : g.avg_ec + '%'}</div></div>
-     <div class="mcard" style="--c:${BLUE};"><div class="ml">Avg BC%</div><div class="mv">${g.avg_bc == null ? 'N/A' : g.avg_bc + '%'}</div></div>
-     <div class="mcard" style="--c:${LIGHT};"><div class="ml">Total Volume</div><div class="mv">${fmt(g.total_volume || 0)}</div></div>
-     <div class="mcard" style="--c:#00c06a;"><div class="ml">WA / Calls</div><div class="mv sm">${fmt(g.wa_volume || 0)} / ${fmt(g.call_volume || 0)}</div></div>`;
-  wrap.appendChild(mgrid);
-
-  if (S.agent.per_agent && S.agent.per_agent.length) {
-    const card = document.createElement('div');
-    card.className = 'chart-card';
-    const div = document.createElement('div');
-    div.className = 'chart tall';
-    card.appendChild(div);
-    const agents = S.agent.per_agent;
-    mountChart(div, {
-      tooltip: Object.assign({}, HOVER_STYLE, { trigger: 'axis', axisPointer: { type: 'shadow' } }),
-      legend: { top: 8, textStyle: { color: NAVY, fontSize: 11 } },
-      grid: { left: 10, right: 14, top: 44, bottom: 8, containLabel: true },
-      xAxis: { type: 'category', data: agents.map((a) => a.agent), axisLabel: { color: NAVY, fontWeight: 600, fontSize: 11, rotate: 32 }, axisLine: { show: false }, axisTick: { show: false } },
-      yAxis: { type: 'value', min: 0, max: 115, splitLine: { lineStyle: { color: 'rgba(0,33,71,.07)' } }, axisLabel: { color: NAVY, fontSize: 10 } },
-      series: [
-        { name: 'EC%', type: 'bar', data: agents.map((a) => a.ec), itemStyle: { color: NAVY, borderRadius: [5, 5, 0, 0] }, label: { show: true, position: 'top', color: NAVY, fontSize: 10, formatter: (p) => p.value.toFixed(1) + '%' } },
-        { name: 'BC%', type: 'bar', data: agents.map((a) => a.bc), itemStyle: { color: LIGHT, borderRadius: [5, 5, 0, 0] }, label: { show: true, position: 'top', color: NAVY, fontSize: 10, formatter: (p) => p.value.toFixed(1) + '%' } },
-      ],
-      backgroundColor: 'transparent',
-    });
-    wrap.appendChild(card);
-  }
-
-  const q = S.meta ? S.meta.quality || {} : {};
-  wrap.appendChild(document.createElement('hr')).className = 'divider';
-  const errTitle = document.createElement('div');
-  errTitle.className = 'st-section-title';
-  errTitle.textContent = '📊 Error Analysis';
-  wrap.appendChild(errTitle);
-
-  if (q.agent_summary && q.agent_summary.length) {
-    const t = document.createElement('div');
-    t.className = 'st-section-title';
-    t.textContent = '📋 Agent Summary';
-    wrap.appendChild(t);
-    const tblWrap = document.createElement('div');
-    tblWrap.className = 'table-wrap thin';
-    tblWrap.innerHTML = renderTable(['🧑‍💼 Agent', '📊 Volume', '📈 Avg EC%', '📉 Avg BC%', '🎯 Overall Avg'],
-      q.agent_summary.map((r) => [r.Agent, r.Volume, r['Avg EC%'], r['Avg BC%'], r['Overall Avg']]));
-    wrap.appendChild(tblWrap);
-  }
-
-  const errCols = document.createElement('div');
-  errCols.className = 'ac-row';
-  ['EC', 'BC', 'NC'].forEach((et) => {
-    const box = document.createElement('div');
-    const tt = document.createElement('div');
-    tt.className = 'st-section-title';
-    tt.textContent = `📈 Top ${et} Errors`;
-    box.appendChild(tt);
-    const rows = (q.top_errors && q.top_errors[et]) || [];
-    if (rows.length) {
-      const tw = document.createElement('div');
-      tw.className = 'table-wrap thin';
-      tw.innerHTML = renderTable(['❌ Error', '🔢 Count'], rows.map((r) => [r.Error, r.Count]));
-      box.appendChild(tw);
-    } else {
-      const inf = document.createElement('div');
-      inf.className = 'empty-msg';
-      inf.textContent = `No ${et} errors found`;
-      box.appendChild(inf);
-    }
-    errCols.appendChild(box);
-  });
-  wrap.appendChild(errCols);
-
-  if (q.per_agent_errors && q.per_agent_errors.length) {
-    const pe = q.per_agent_errors.filter((r) => r.Type === 'EC' || r.Type === 'BC' || r.Type === 'NC');
-    const t = document.createElement('div');
-    t.className = 'st-section-title';
-    t.textContent = '👤 Per-Agent Error Breakdown';
-    wrap.appendChild(t);
-    const filterRow = document.createElement('div');
-    filterRow.className = 'drill-row';
-    const agents = ['All', ...Array.from(new Set(pe.map((r) => r.Agent))).sort()];
-    filterRow.innerHTML = `<label>👤 Filter by Agent:</label>
-      <select class="select-sel" id="qe-agent" style="background:${NAVY};color:#fff;border-radius:8px;padding:7px 10px;font-size:12px;max-width:220px;">
-        ${agents.map((a) => `<option value="${esc(a)}">${esc(a)}</option>`).join('')}
-      </select>
-      <label>🏷️ Filter by Error Type:</label>
-      <select class="select-sel" id="qe-type" style="background:${NAVY};color:#fff;border-radius:8px;padding:7px 10px;font-size:12px;max-width:160px;">
-        ${['All','EC','BC','NC'].map((a) => `<option value="${a}">${a}</option>`).join('')}
-      </select>`;
-    wrap.appendChild(filterRow);
-    const tblWrap = document.createElement('div');
-    tblWrap.className = 'table-wrap';
-    const draw = () => {
-      const a = $('#qe-agent').value, ty = $('#qe-type').value;
-      let rows = pe;
-      if (a !== 'All') rows = rows.filter((r) => r.Agent === a);
-      if (ty !== 'All') rows = rows.filter((r) => r.Type === ty);
-      tblWrap.innerHTML = renderTable(['🧑‍💼 Agent', '📂 Type', '❌ Error', '🔢 Count'], rows.map((r) => [r.Agent, r.Type, r.Error, r.Count]));
-    };
-    wrap.appendChild(tblWrap);
-    draw();
-    $('#qe-agent').addEventListener('change', draw);
-    $('#qe-type').addEventListener('change', draw);
-  }
-}
-
-/* ============================== WHATSAPP MOM ============================== */
-function renderWhatsApp() {
-  const content = $('#content');
-  content.innerHTML = `<div class="page-title">💬 WhatsApp MOM SLA Analysis</div>`;
-  const wa = S.ffBase ? S.ffBase.filter((r) => get(r, '_team') === 'merchant' && cleanVal(get(r, 'WhatsApp SLA Status')) !== '') : [];
-  if (!wa.length) {
-    content.insertAdjacentHTML('beforeend', '<div class="empty-msg">No WhatsApp SLA data available</div>');
-    return;
-  }
-  const ot = wa.filter((r) => /On-Time|On Time/i.test(get(r, 'WhatsApp SLA Status'))).length;
-  const ov = wa.length ? ot / wa.length * 100 : 0;
-  const achieved = ov >= 95;
-  const arrow = achieved ? '▲' : '▼';
-  const acol = achieved ? GREEN : RED;
-
-  const overall = document.createElement('div');
-  overall.className = 'overall-card';
-  overall.style.cssText = 'text-align:center;margin-bottom:20px;';
-  overall.innerHTML = `
-    <p style="margin:0 0 4px;font-weight:900;color:${NAVY};font-size:14px;letter-spacing:1px;font-family:Sora,sans-serif;">💬 OVERALL ON-TIME RESPONSE</p>
-    <p style="color:${LIGHT};font-size:46px;font-weight:900;margin:2px 0 6px;font-family:Sora,sans-serif;">${ov.toFixed(1)}%</p>
-    <p style="font-weight:800;font-size:16px;margin:0;color:${NAVY};">
-      <span style="color:${acol};font-size:20px;">${arrow}</span>&nbsp;
-      <span style="color:${GREEN};"> Target: 95%</span>&nbsp;—&nbsp;
-      <span style="color:${acol};">${achieved ? 'Achieved' : 'Below Target'}</span></p>`;
-  content.appendChild(overall);
-
-  const months = [];
-  for (const r of wa) { const m = monthOf(get(r, 'D_Obj')); if (!months.includes(m)) months.push(m); }
-  months.sort();
-  const momGrid = document.createElement('div');
-  momGrid.className = 'mom-grid';
-  months.forEach((m) => {
-    const md = wa.filter((r) => monthOf(get(r, 'D_Obj')) === m);
-    const mOt = md.filter((r) => /On-Time|On Time/i.test(get(r, 'WhatsApp SLA Status'))).length;
-    const mLt = md.filter((r) => /Late/i.test(get(r, 'WhatsApp SLA Status'))).length;
-    const prc = md.length ? mOt / md.length * 100 : 0;
-    const card = document.createElement('div');
-    card.className = 'wa-card';
-    card.innerHTML = `<h5>📅 ${esc(monthName(m))}</h5><div class="perc">${prc.toFixed(1)}%</div>
-      <p style="color:${GREEN};font-weight:700;margin:3px 0;">✅ On-Time: ${fmt(mOt)}</p>
-      <p style="color:#CC0000;font-weight:700;margin:3px 0;">❌ Late: ${fmt(mLt)}</p>`;
-    momGrid.appendChild(card);
-  });
-  content.appendChild(momGrid);
-}
-
-/* ============================== INBOUND SLA ============================== */
-function renderSla() {
-  const content = $('#content');
-  content.innerHTML = `<div class="page-title">📈 Inbound SLA Performance</div>`;
-  const sla = S.sla;
-  if (!sla || !sla.cols.length || !sla.rows.length) {
-    content.insertAdjacentHTML('beforeend', '<div class="empty-msg">No SLA data available</div>');
-    return;
-  }
-  const pcaCol = sla.cols.find((c) => /pca/i.test(c));
-  const monthCol = sla.cols.find((c) => /month/i.test(c)) || sla.cols[0];
-  if (!pcaCol) {
-    content.insertAdjacentHTML('beforeend', renderTable(sla.cols, sla.rows));
-    return;
-  }
-  const pi = sla.cols.indexOf(pcaCol), mi = sla.cols.indexOf(monthCol);
-  const pcaVals = sla.rows.map((r) => parseNum(r[pi])).filter((v) => v > 0);
-  const opa = pcaVals.length ? pcaVals.reduce((a, b) => a + b, 0) / pcaVals.length : 0;
-  const achieved = opa >= 95;
-  const arrow = achieved ? '▲' : '▼';
-  const acol = achieved ? GREEN : RED;
-
-  const overall = document.createElement('div');
-  overall.className = 'overall-card';
-  overall.style.cssText = 'text-align:center;margin-bottom:20px;';
-  overall.innerHTML = `
-    <p style="margin:0 0 8px;font-weight:900;color:${NAVY};font-size:11px;letter-spacing:2px;font-family:Sora,sans-serif;text-transform:uppercase;opacity:.7;">📊 OVERALL PCA% ACHIEVEMENT (AVG)</p>
-    <p style="color:${BLUE};font-size:52px;font-weight:900;margin:2px 0 10px;font-family:Sora,sans-serif;">${opa.toFixed(1)}%</p>
-    <p style="font-weight:800;font-size:16px;margin:0;color:${NAVY};">
-      <span style="color:${acol};font-size:22px;">${arrow}</span>&nbsp;
-      Target: 95% &mdash; <span style="color:${acol};font-weight:900;">${achieved ? 'Achieved' : 'Below Target'}</span></p>`;
-  content.appendChild(overall);
-
-  const items = sla.rows.map((r) => ({ name: r[mi] || '', value: parseNum(r[pi]) }));
-  const card = document.createElement('div');
-  card.className = 'chart-card';
-  const div = document.createElement('div');
-  div.className = 'chart';
-  card.appendChild(div);
-  const chart = mountChart(div, barSpec('📊 Monthly PCA% Achievement', items, NAVY, (p) => {
-    const it = p[0];
-    return `<b>${esc(it.name)}</b><br>PCA: <b>${it.value.toFixed(1)}%</b>`;
-  }));
-  chart.setOption({ yAxis: { type: 'value', name: 'PCA %', nameTextStyle: { color: NAVY, fontWeight: 700 }, splitLine: { lineStyle: { color: 'rgba(0,33,71,.07)' } }, axisLabel: { color: NAVY, fontSize: 10 } } });
-  content.appendChild(card);
-
-  const tblWrap = document.createElement('div');
-  tblWrap.className = 'table-wrap thin';
-  tblWrap.innerHTML = renderTable([`📅 ${monthCol}`, `📊 ${pcaCol}`], sla.rows.map((r) => [r[mi], (parseNum(r[pi])).toFixed(1)]));
-  content.appendChild(tblWrap);
-}
-
-/* ============================== REDEMPTION ============================== */
-function renderRedemption() {
-  const content = $('#content');
-  content.innerHTML = `<div class="page-title">💰 Redemption Tracker</div>`;
-  const red = S.redemption;
-  if (!red || !red.cols.length || !red.rows.length) {
-    content.insertAdjacentHTML('beforeend', '<div class="empty-msg">No Redemption data available</div>');
-    return;
-  }
-  const first = red.rows[0] || [];
-  const ci = {
-    txn: red.cols.indexOf('Total Transactions'),
-    agent: red.cols.indexOf('Top Agent'),
-    val: red.cols.indexOf('Total Redemption Amount'),
-  };
-  const totalTxn = ci.txn >= 0 ? fmt(Math.round(parseNum(first[ci.txn]))) : 'N/A';
-  const topAgent = ci.agent >= 0 && first[ci.agent] ? cleanVal(first[ci.agent]) : 'N/A';
-  const totalVal = ci.val >= 0 ? fmt(Math.round(parseNum(first[ci.val]))) : 'N/A';
-
-  const mgrid = document.createElement('div');
-  mgrid.className = 'mgrid3';
-  mgrid.innerHTML =
-    `<div class="mcard" style="--c:${NAVY};"><div class="ml">📋 Total Transactions</div><div class="mv">${totalTxn}</div></div>
-     <div class="mcard" style="--c:${BLUE};"><div class="ml">🏆 Top Agent</div><div class="mv sm">${esc(topAgent)}</div></div>
-     <div class="mcard" style="--c:${LIGHT};"><div class="ml">💰 Total Redemption Amount</div><div class="mv">${totalVal}</div></div>`;
-  content.appendChild(mgrid);
-
-  const tblWrap = document.createElement('div');
-  tblWrap.className = 'table-wrap';
-  tblWrap.innerHTML = renderTable(red.cols, red.rows);
-  content.appendChild(tblWrap);
-}
-
-/* ============================== TICKET EXPLORER ============================== */
-function renderTable(headers, rows) {
-  if (!rows || !rows.length) return '<div class="empty-msg">No matching tickets</div>';
-  const th = headers.map((h) => `<th>${esc(h)}</th>`).join('');
-  const tr = rows.map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join('')}</tr>`).join('');
-  return `<table class="modern-table"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table>`;
-}
-
-function csvOf(headers, rows) {
-  const q = (v) => {
-    const s = String(v == null ? '' : v);
-    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-  };
-  return [headers.map(q).join(','), ...rows.map((r) => r.map(q).join(','))].join('\n');
-}
-
-function renderExplorer() {
-  const content = $('#content');
-  content.innerHTML = '';
-  const ff = applyFilters(S.ffBase);
 
   const subtabs = document.createElement('div');
   subtabs.className = 'ov-subtabs';
@@ -1116,227 +345,83 @@ function renderExplorer() {
   subtabs.appendChild(mk('🤝 Client Support', 1));
   content.appendChild(subtabs);
 
-  const team = ff.filter((r) => get(r, '_team') === (S.ovTeam === 0 ? 'merchant' : 'client'));
-  const teamKey = S.ovTeam === 0 ? 'merchant' : 'client';
-  const drillDate = S.drill[teamKey];
+  const ff = applyFilters(S.ffBase || []);
+  const dataRows = getTeamRows(ff);
 
-  let rows = team;
-  if (drillDate) rows = rows.filter((r) => get(r, 'D_Obj') === drillDate);
+  // Scorecards
+  const scRow = document.createElement('div');
+  scRow.className = 'sc-row';
+  scRow.innerHTML = `
+    <div class="sc-card" style="--top-color:${NAVY}">
+      <div class="sc-label">📋 Total Tickets</div>
+      <div class="sc-value">${fmt(dataRows.length)}</div>
+    </div>
+    <div class="sc-card" style="--top-color:${BLUE}">
+      <div class="sc-label">📞 Inbound Calls</div>
+      <div class="sc-value">${fmt(dataRows.filter(r => /Inbound|Call/i.test(get(r,'Type')||'')).length)}</div>
+    </div>
+    <div class="sc-card" style="--top-color:${LIGHT}">
+      <div class="sc-label">💬 WhatsApp</div>
+      <div class="sc-value">${fmt(dataRows.filter(r => /WhatsApp|App/i.test(get(r,'Type')||'')).length)}</div>
+    </div>`;
+  content.appendChild(scRow);
 
-  const displayCols = S.tickets.cols.filter((c) => !['D_Obj', 'Ticket_Status', '_team'].includes(c));
-  const dispIdx = displayCols.map((c) => col(c));
-  const headers = displayCols;
+  // Grid Charts
+  const grid = document.createElement('div');
+  grid.className = 'chart-grid';
 
-  const searchRow = document.createElement('div');
-  searchRow.className = 'search-row';
-  searchRow.innerHTML = `<input class="search-input" id="explorer-search" placeholder="Search…">
-    <button class="dl-btn" id="explorer-export">📥 Export CSV</button>`;
-  content.appendChild(searchRow);
+  const m = groupTop(dataRows, 'Merchant', 'Call Microtype', 5);
+  if (m.length) grid.appendChild(barCard('🏪 Top Merchants', m, NAVY));
 
-  const tblWrap = document.createElement('div');
-  tblWrap.className = 'table-wrap';
-  content.appendChild(tblWrap);
+  const b = groupTop(dataRows, 'Branch User Name', 'Merchant', 5);
+  if (b.length) grid.appendChild(barCard('📍 Top Branches', b, LIGHT));
 
-  const draw = () => {
-    const q = cleanVal($('#explorer-search').value).toLowerCase();
-    let out = rows;
-    if (q) out = rows.filter((r) => r.some((v) => String(v == null ? '' : v).toLowerCase().includes(q)));
-    const shown = out.map((r) => dispIdx.map((i) => (r[i] == null ? '' : r[i])));
-    tblWrap.innerHTML = renderTable(headers, shown);
-    $('#explorer-export').onclick = () => {
-      const csv = csvOf(headers, shown);
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `tickets_${teamKey}_support.csv`;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    };
-  };
-  draw();
-  $('#explorer-search').addEventListener('input', draw);
-}
+  const p = groupTop(dataRows, 'Project', 'Call Microtype', 5);
+  if (p.length) grid.appendChild(barCard('🏢 Top Projects', p, NAVY));
 
-/* ============================== ACCESS MGMT ============================== */
-function renderAccessMgmt() {
-  const content = $('#content');
-  const clients = S.auth ? S.auth.clients || {} : {};
-  const rows = Object.entries(clients).map(([pwd, c]) => [pwd, (c.projects || []).join(', '), c.is_vodafone ? '✅' : '—', c.logo ? '✅' : '—']);
-  content.innerHTML = `<div class="page-title">🔐 Access Management</div>
-    <div class="empty-msg">Manage access keys by editing <b>web/access.json</b> in the repository and pushing a change — the site reloads them automatically on next login.</div>
-    <div style="margin-top:14px;">${renderTable(['Password', 'Projects', 'Vodafone', 'Logo'], rows)}</div>`;
+  const tt = countBy(dataRows, 'Ticket type', { clean: true });
+  if (tt.length) grid.appendChild(pieCard('🎫 Ticket Type Share', tt));
+
+  const su = groupTop(dataRows, 'Ticket subtype', 'Ticket type', 3);
+  if (su.length) grid.appendChild(barCard('🏷️ Top Subtypes', su, NAVY));
+
+  const mi = groupTop(dataRows, 'Call Microtype', 'Ticket subtype', 5);
+  if (mi.length) grid.appendChild(barCard('🔬 Top Microtypes', mi, LIGHT));
+
+  content.appendChild(grid);
 }
 
 /* ============================== MAIN RENDER ============================== */
 function renderAll() {
   disposeCharts();
-  if (!S.meta || !S.tickets || !S.session) return;
-
+  if (!S.tickets || !S.session) return;
   S.ffBase = S.tickets.rows.filter(baseFilter);
-
   renderHeader();
   renderSidebar();
-
-  const content = $('#content');
-  content.innerHTML = '';
-
-  if (S.session.role === 'client') {
-    $('#tabbar').innerHTML = '';
-    renderClientSection();
-    return;
-  }
-
-  if (S.activeTab === 99) {
-    renderAccessMgmt();
-    return;
-  }
-
-  const tabDefs = renderTabs();
-  const tab = tabDefs.find((t) => t.idx === S.activeTab);
-  const name = tab ? tab.name : 'Overview';
-  if (name === 'Overview') renderOverview();
-  else if (name === 'Quality Board') renderQuality();
-  else if (name === 'WhatsApp MOM') renderWhatsApp();
-  else if (name === 'Inbound SLA') renderSla();
-  else if (name === 'Redemption Tracker') renderRedemption();
-  else if (name === 'Ticket Explorer') renderExplorer();
+  renderTabs();
+  renderOverview();
 }
 
-/* ============================== SLIDESHOW ============================== */
-let slideTimer = null;
+function showLoading(msg) { $('#loading-screen').hidden = false; $('#app').hidden = true; $('#loading-status').textContent = msg; }
+function hideLoading() { $('#loading-screen').hidden = true; $('#app').hidden = false; }
 
-function scheduleSlideshow() {
-  if (slideTimer) clearInterval(slideTimer);
-  slideTimer = setInterval(() => {
-    if (!S.slideshow) { clearInterval(slideTimer); slideTimer = null; return; }
-    S.slideIndex++;
-    renderAll();
-  }, 12000);
-}
-
-function renderSlideDeck(rows, teamKey, clientMode) {
-  const content = $('#content');
-  const deck = [];
-
-  const vol = renderVolumeTrend(rows, teamKey);
-  if (vol.wrap) deck.push({ title: '📊 Volume Trend (Peak Days)', el: vol.wrap });
-
-  const isVf = !!S.session.is_vodafone;
-  buildOverviewCharts(rows, clientMode, isVf).forEach((spec) => {
-    deck.push({ title: spec.title, el: renderChartCard(spec) });
-  });
-
-  if (clientMode !== 'client') {
-    const st = renderStatusPie(rows, (s) => { S.clickFilter = { col: 'Ticket_Status', val: s }; renderAll(); });
-    if (st) deck.push({ title: '🎫 Live Ticket Status', el: st });
-  }
-
-  if (!deck.length) {
-    content.insertAdjacentHTML('beforeend', '<div class="empty-msg">No data for this filter</div>');
-    return;
-  }
-
-  if (S.slideIndex >= deck.length) S.slideIndex = 0;
-  const idx = S.slideIndex;
-  const cur = deck[idx];
-
-  const banner = document.createElement('div');
-  banner.className = 'slideshow-banner';
-  banner.textContent = `▶ Slideshow | ${idx + 1}/${deck.length} | ${cur.title} | auto 12s`;
-
-  const scWrap = document.createElement('div');
-  scWrap.className = 'slide-scorecards';
-  if (clientMode === 'client') {
-    scWrap.innerHTML = `<div class="slide-sc"><div class="l">Total</div><div class="v">${fmt(rows.length)}</div></div>`;
-  } else if (clientMode === true) {
-    const rs = rows.filter((r) => /Within|Resolved/i.test(get(r, 'Resolution status') || '')).length;
-    const urgent = rows.filter((r) => /Urgent|High/i.test(get(r, 'Priority') || '')).length;
-    scWrap.innerHTML = `<div class="slide-sc"><div class="l">Total</div><div class="v">${fmt(rows.length)}</div></div>
-      <div class="slide-sc"><div class="l">Resolution</div><div class="v">${fmt(rs)}</div></div>
-      <div class="slide-sc"><div class="l">Urgent</div><div class="v">${fmt(urgent)}</div></div>`;
-  } else {
-    const inb = rows.filter((r) => /Inbound|Call/i.test(get(r, 'Type') || '')).length;
-    const wa = rows.filter((r) => /WhatsApp|App/i.test(get(r, 'Type') || '')).length;
-    scWrap.innerHTML = `<div class="slide-sc"><div class="l">Total</div><div class="v">${fmt(rows.length)}</div></div>
-      <div class="slide-sc"><div class="l">Inbound</div><div class="v">${fmt(inb)}</div></div>
-      <div class="slide-sc"><div class="l">WhatsApp</div><div class="v">${fmt(wa)}</div></div>`;
-  }
-
-  content.appendChild(banner);
-  content.appendChild(scWrap);
-
-  const stage = document.createElement('div');
-  stage.style.cssText = 'display:grid;grid-template-columns:1fr;gap:18px;max-width:880px;margin:0 auto;';
-  cur.el.style.height = '420px';
-  stage.appendChild(cur.el);
-  content.appendChild(stage);
-}
-
-/* ============================== LOADING HELPERS ============================== */
-function showLoading(msg) {
-  $('#login-screen').hidden = true;
-  $('#app').hidden = true;
-  $('#loading-screen').hidden = false;
-  $('#loading-status').textContent = msg || 'Loading…';
-}
-function hideLoading() {
-  $('#loading-screen').hidden = true;
-  $('#app').hidden = false;
-}
-
-/* ============================== INIT ============================== */
 async function boot() {
-  const isClient = S.session.role === 'client';
-  S.filters = { dateMode: isClient ? 'Last 3 months' : (S.session.role === 'admin' ? 'All time' : 'Last 3 months'),
-    customStart: null, customEnd: null, merchant: [], project: [], branch: [], district: [], type: [], subtype: [], microtype: [], action: [], status: [] };
-  S.fSearch = {};
-  S.clickFilter = { col: null, val: null };
-  S.activeTab = 0;
-  S.ovTeam = 0;
-  S.drill = { merchant: null, client: null };
-  S.slideshow = false;
+  S.filters = { dateMode: 'All time', customStart: null, customEnd: null, merchant: [], project: [], branch: [], district: [], type: [], subtype: [], microtype: [], action: [], status: [] };
   $('#login-screen').hidden = true;
   $('#app').hidden = false;
-  try {
-    await loadData(false);
-  } catch (e) {
-    console.error(e);
-  }
+  await loadData(false);
   renderAll();
-  showLive();
 }
 
 async function init() {
-  S.auth = await fetchJson('access.json');
+  S.auth = await fetchJson('access.json').catch(() => ({ admin: 'admin', user: 'user' }));
   $('#login-btn').addEventListener('click', submitLogin);
-  $('#login-key').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitLogin(); });
-
   const saved = localStorage.getItem('ds_session');
   if (saved) {
-    try {
-      const sess = JSON.parse(saved);
-      const valid = sess.role === 'admin' || sess.role === 'user' || (S.auth.clients && S.auth.clients[sess.key]);
-      if (valid) {
-        S.session = sess;
-        if (sess.role === 'client') {
-          const c = S.auth.clients[sess.key];
-          S.session.projects = c.projects;
-          S.session.is_vodafone = !!c.is_vodafone;
-          S.session.logo = c.logo || null;
-        }
-        await boot();
-        return;
-      }
-    } catch (e) {}
+    try { S.session = JSON.parse(saved); await boot(); return; } catch (e) {}
   }
   showLogin();
 }
 
-function showLive() {
-  const live = document.createElement('div');
-  live.style.display = 'none';
-  document.body.appendChild(live);
-}
-
 window.addEventListener('resize', () => { S.charts.forEach((c) => { try { c.resize(); } catch (e) {} }); });
-document.addEventListener('DOMContentLoaded', () => { init().catch((e) => { console.error(e); showLogin(); }); });
+document.addEventListener('DOMContentLoaded', () => { init().catch(showLogin); });
