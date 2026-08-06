@@ -64,14 +64,13 @@ async function loadData(bust) {
   showLoading('Loading tickets…');
   S.meta = await fetchJson('./data/meta.json', bust).catch(() => fetchJson('data/meta.json', bust));
   
-  try {
-    S.tickets = await fetchJson('./data/tickets.json', bust);
-  } catch(e) {
-    S.tickets = await fetchJson('./data/tickets.json.gz', bust);
-  }
+  // قراءة ملف JSON العادي مباشرة بدون فك ضغط
+  S.tickets = await fetchJson('./data/tickets.json', bust).catch(() => fetchJson('data/tickets.json', bust));
 
   S.colIdx = {};
-  S.tickets.cols.forEach((c, i) => { S.colIdx[c] = i; });
+  if (S.tickets && S.tickets.cols) {
+    S.tickets.cols.forEach((c, i) => { S.colIdx[c] = i; });
+  }
   showLoading('Loading quality data…');
   S.agent = await fetchJson('./data/agent.json', bust).catch(() => ({}));
   S.sla = await fetchJson('./data/sla.json', bust).catch(() => ({}));
@@ -230,8 +229,8 @@ function pieSpec(title, items, colors, tooltipFn) {
     series: [{
       type: 'pie', radius: ['45%', '70%'], center: ['50%', '52%'], data: items,
       itemStyle: { borderColor: '#fff', borderWidth: 2.5, borderRadius: 4 },
-      label: { color: '#fff', fontSize: 11, fontWeight: 600 },
-      labelLine: { lineStyle: { color: 'rgba(255,255,255,.6)' } },
+      label: { color: NAVY, fontSize: 11, fontWeight: 600 },
+      labelLine: { lineStyle: { color: 'rgba(0,33,71,.3)' } },
       color: colors,
     }],
     legend: { bottom: 2, icon: 'circle', itemWidth: 10, itemHeight: 10, textStyle: { color: NAVY, fontSize: 11 } },
@@ -322,10 +321,10 @@ function renderTabs() {
 function getTeamRows(rows) {
   if (!rows || !rows.length) return [];
   const teamIdx = col('_team');
-  if (teamIdx == null) return rows; // Fallback: return all rows if _team column missing
+  if (teamIdx == null) return rows;
   const target = S.ovTeam === 0 ? 'merchant' : 'client';
   const filtered = rows.filter((r) => String(r[teamIdx]).toLowerCase() === target);
-  return filtered.length ? filtered : rows; // Fallback if team filter returns empty
+  return filtered.length ? filtered : rows;
 }
 
 function renderOverview() {
@@ -358,11 +357,11 @@ function renderOverview() {
     </div>
     <div class="sc-card" style="--top-color:${BLUE}">
       <div class="sc-label">📞 Inbound Calls</div>
-      <div class="sc-value">${fmt(dataRows.filter(r => /Inbound|Call/i.test(get(r,'Type')||'')).length)}</div>
+      <div class="sc-value">${fmt(dataRows.filter(r => /Inbound|Call/i.test(get(r,'Ticket type')||'')).length)}</div>
     </div>
     <div class="sc-card" style="--top-color:${LIGHT}">
       <div class="sc-label">💬 WhatsApp</div>
-      <div class="sc-value">${fmt(dataRows.filter(r => /WhatsApp|App/i.test(get(r,'Type')||'')).length)}</div>
+      <div class="sc-value">${fmt(dataRows.filter(r => /WhatsApp|App/i.test(get(r,'Ticket type')||'')).length)}</div>
     </div>`;
   content.appendChild(scRow);
 
@@ -395,7 +394,7 @@ function renderOverview() {
 function renderAll() {
   disposeCharts();
   if (!S.tickets || !S.session) return;
-  S.ffBase = S.tickets.rows.filter(baseFilter);
+  S.ffBase = S.tickets.rows ? S.tickets.rows.filter(baseFilter) : [];
   renderHeader();
   renderSidebar();
   renderTabs();
