@@ -1,5 +1,5 @@
 'use strict';
-/* Support Analysis Dashboard — Fully Patched Version */
+/* Support Analysis Dashboard — Auto-Resize & Robust Quality Board Fix */
 
 const NAVY = '#002147', BLUE = '#0055A4', LIGHT = '#00AEEF', RED = '#FF4B4B', GREEN = '#00873d';
 const PIE_COLORS = ['#002147','#0055A4','#00AEEF','#0077cc','#4a90d9','#003d82','#00c6ff','#1a3a6b','#66b2e8','#0094d4'];
@@ -88,6 +88,15 @@ function mountChart(dom, option) {
   dom._chart = chart;
   chart.setOption(option, true);
   S.charts.push(chart);
+
+  // التكفل بضبط أبعاد الـ Chart أوتوماتيكياً فور تغير حجم الكونتينر (يقضي على مشكلة الـ Inspect)
+  if (window.ResizeObserver) {
+    const ro = new ResizeObserver(() => {
+      chart.resize();
+    });
+    ro.observe(dom);
+  }
+
   return chart;
 }
 
@@ -121,15 +130,17 @@ function barSpec(title, items, baseColor) {
 function barCard(title, items, baseColor, onClick) {
   const wrap = document.createElement('div');
   wrap.className = 'chart-card';
+  wrap.style.width = '100%';
   const div = document.createElement('div');
   div.className = 'chart';
-  div.style.minHeight = '280px';
+  div.style.width = '100%';
+  div.style.height = '300px';
   wrap.appendChild(div);
 
-  setTimeout(() => {
+  requestAnimationFrame(() => {
     const chart = mountChart(div, barSpec(title, items, baseColor));
     if (onClick && chart) chart.on('click', (p) => { if (p.name != null) onClick(p.name); });
-  }, 50);
+  });
 
   return wrap;
 }
@@ -202,13 +213,22 @@ function renderQualityBoard() {
   content.innerHTML = '';
 
   const ag = S.agent || {};
-  const summary = ag.summary || [
-    { agent: 'Ahmed Nasr', volume: 451, ec: '97.1%', bc: '97.1%', overall: '97.1%' },
-    { agent: 'Amira Gamal', volume: 428, ec: '95.6%', bc: '97.0%', overall: '96.3%' },
-    { agent: 'Hussein Ismail', volume: 450, ec: '96.7%', bc: '95.8%', overall: '96.2%' },
-    { agent: 'Karim Abdelbary', volume: 446, ec: '96.9%', bc: '96.6%', overall: '96.7%' },
-    { agent: 'Menna Sameh', volume: 428, ec: '99.1%', bc: '98.8%', overall: '98.9%' },
-  ];
+
+  // استخراج بيانات الـ Agent Summary بشمولية أياً كان شكل الهيكل المخزن في agent.json
+  let summary = [];
+  if (Array.isArray(ag.summary)) {
+    summary = ag.summary;
+  } else if (ag.agents && typeof ag.agents === 'object') {
+    summary = Object.keys(ag.agents).map(k => ({ agent: k, ...ag.agents[k] }));
+  } else {
+    summary = [
+      { agent: 'Ahmed Nasr', volume: 451, ec: '97.1%', bc: '97.1%', overall: '97.1%' },
+      { agent: 'Amira Gamal', volume: 428, ec: '95.6%', bc: '97.0%', overall: '96.3%' },
+      { agent: 'Hussein Ismail', volume: 450, ec: '96.7%', bc: '95.8%', overall: '96.2%' },
+      { agent: 'Karim Abdelbary', volume: 446, ec: '96.9%', bc: '96.6%', overall: '96.7%' },
+      { agent: 'Menna Sameh', volume: 428, ec: '99.1%', bc: '98.8%', overall: '98.9%' },
+    ];
+  }
 
   let html = `<div style="background:#fff; padding:20px; border-radius:10px; box-shadow:0 2px 8px rgba(0,0,0,0.05); margin-bottom:20px;">
     <h3 style="color:${NAVY}; margin-top:0;">📋 Agent Summary</h3>
@@ -225,40 +245,53 @@ function renderQualityBoard() {
       <tbody>`;
 
   summary.forEach((row) => {
+    const name = row.agent || row.name || 'N/A';
+    const vol = row.volume || row.count || 0;
+    const ec = row.ec || row.avg_ec || '0%';
+    const bc = row.bc || row.avg_bc || '0%';
+    const overall = row.overall || row.overall_avg || '0%';
+
     html += `<tr style="border-bottom:1px solid #eee;">
-      <td style="padding:10px; font-weight:bold;">${esc(row.agent)}</td>
-      <td style="padding:10px;">${fmt(row.volume)}</td>
-      <td style="padding:10px;">${esc(row.ec)}</td>
-      <td style="padding:10px;">${esc(row.bc)}</td>
-      <td style="padding:10px; font-weight:bold; color:${BLUE}">${esc(row.overall)}</td>
+      <td style="padding:10px; font-weight:bold;">${esc(name)}</td>
+      <td style="padding:10px;">${fmt(vol)}</td>
+      <td style="padding:10px;">${esc(ec)}</td>
+      <td style="padding:10px;">${esc(bc)}</td>
+      <td style="padding:10px; font-weight:bold; color:${BLUE}">${esc(overall)}</td>
     </tr>`;
   });
 
   html += `</tbody></table></div>`;
 
-  const errorsEC = ag.ec_errors || [
+  // استخراج وتحليل الأخطاء بحرص
+  const extractErrors = (keyFallback, defaultItems) => {
+    if (Array.isArray(ag[keyFallback])) return ag[keyFallback];
+    if (ag.errors && Array.isArray(ag.errors[keyFallback])) return ag.errors[keyFallback];
+    return defaultItems;
+  };
+
+  const errorsEC = extractErrors('ec_errors', [
     { error: 'Failure to meet agreed SLA', count: 34 },
     { error: 'Did not adhere to the call scenarios', count: 15 },
     { error: 'Did not start chat for 5 Min', count: 10 },
     { error: 'Did not escalate the issue to concerned team', count: 9 },
     { error: 'Did not provide accurate and complete information', count: 4 }
-  ];
+  ]);
 
-  const errorsBC = ag.bc_errors || [
+  const errorsBC = extractErrors('bc_errors', [
     { error: 'Did not select correct call tree', count: 35 },
     { error: 'Did not add customer mobile number', count: 14 },
     { error: 'Did not select correct action taken', count: 12 },
     { error: 'Did not add correct branch username', count: 5 },
     { error: 'Did not create ticket', count: 5 }
-  ];
+  ]);
 
-  const errorsNC = ag.nc_errors || [
+  const errorsNC = extractErrors('nc_errors', [
     { error: 'Unable to explain', count: 4 },
     { error: 'Used unprofessional/slang words', count: 4 },
     { error: 'Did not follow dead air procedure (10 Sec)', count: 2 },
     { error: 'Used unfriendly tone of voice', count: 2 },
     { error: 'Did not collect data in smart way', count: 1 }
-  ];
+  ]);
 
   const renderErrTable = (title, items) => {
     let tHtml = `<div style="flex:1; min-width:280px; background:#fff; padding:15px; border-radius:10px; box-shadow:0 2px 8px rgba(0,0,0,0.05);">
@@ -266,9 +299,11 @@ function renderQualityBoard() {
       <table style="width:100%; border-collapse:collapse; font-size:12px;">
         <thead><tr style="background:#f4f7fa;"><th style="padding:8px; text-align:left;">Error</th><th style="padding:8px; text-align:right;">Count</th></tr></thead><tbody>`;
     items.forEach((item) => {
+      const errTxt = item.error || item.name || 'Unknown Error';
+      const cnt = item.count || item.value || 0;
       tHtml += `<tr style="border-bottom:1px solid #eee;">
-        <td style="padding:8px; text-align:left;">${esc(item.error)}</td>
-        <td style="padding:8px; text-align:right; font-weight:bold; color:${RED}">${fmt(item.count)}</td>
+        <td style="padding:8px; text-align:left;">${esc(errTxt)}</td>
+        <td style="padding:8px; text-align:right; font-weight:bold; color:${RED}">${fmt(cnt)}</td>
       </tr>`;
     });
     tHtml += `</tbody></table></div>`;
@@ -298,7 +333,7 @@ function renderAll() {
   else if (S.activeTab === 1) renderQualityBoard();
   else renderOverview();
 
-  // Force chart layout recalculation automatically to fix invisible charts on render
+  // إرسال إشعار resize تلقائي بعد إتمام الرسم للتأكد من المحاذاة الكاملة
   setTimeout(() => {
     window.dispatchEvent(new Event('resize'));
   }, 100);
